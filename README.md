@@ -24,7 +24,7 @@ ln -s "$(pwd)/ralph.sh" /usr/local/bin/ralph
 
 ## Quick Start
 
-### Beads Auto-Discovery (recommended)
+### With Beads (recommended)
 
 In a beads-initialized repo, just run:
 
@@ -36,11 +36,13 @@ Ralph will find in-progress tasks to finish, then pick the next ready task.
 
 ### With Parent Issue
 
-Work through children of a specific epic or parent:
+Work through children of an epic or parent issue:
 
 ```bash
 ralph -b EPIC-001
 ```
+
+Ralph will find in-progress tasks to finish, then pick the next ready task.
 
 ### With Plan File
 
@@ -64,11 +66,6 @@ Options:
   -s, --settings FILE         Claude settings JSON for permissions (optional)
   -c, --config FILE           Config file with project info (default: prd.json)
   -h, --help                  Show help message
-
-Modes:
-  ralph                       Auto-discovery (requires .beads directory)
-  ralph -b ISSUE-ID           Work children of a parent issue
-  ralph -p plan.md            Work from a plan file
 ```
 
 ## How It Works
@@ -260,7 +257,7 @@ Claude should output this **only** when all tasks in the plan are finished. The 
 ## Exit Codes
 
 | Code | Meaning |
-|------|---------|
+| ------ | --------- |
 | 0 | Success - completion signal detected |
 | 1 | Max iterations reached without completion |
 | 2 | Configuration error (missing files, invalid options) |

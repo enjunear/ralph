@@ -15,7 +15,6 @@
 # Completion: Exits when output contains <promise>COMPLETE</promise>
 #
 # Examples:
-#   ralph                     # auto-discovery (requires beads initialized)
 #   ralph -b EPIC-001         # work children of EPIC-001
 #   ralph -p plan.md          # work from a plan file
 #   ralph -b EPIC-001 -i 20   # with iteration limit
@@ -104,22 +103,12 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Validate required arguments - need prompt, beads issue, or beads initialized
-BEADS_MODE=""
-if [[ -n "$BEADS_ISSUE" ]]; then
-    BEADS_MODE="parent"
-elif [[ -z "$PROMPT_FILE" ]]; then
-    # No prompt and no beads issue - check if beads is initialized
-    if [[ -d ".beads" ]]; then
-        BEADS_MODE="auto"
-        echo "Beads detected - using auto-discovery mode"
-    else
-        echo "Error: -p/--prompt or -b/--beads is required" >&2
-        echo "Usage: ralph -p PLAN.md [OPTIONS]" >&2
-        echo "       ralph -b ISSUE-ID [OPTIONS]" >&2
-        echo "       ralph (in a beads-initialized repo)" >&2
-        exit 2
-    fi
+# Validate required arguments - need prompt or beads issue
+if [[ -z "$PROMPT_FILE" ]] && [[ -z "$BEADS_ISSUE" ]]; then
+    echo "Error: -p/--prompt or -b/--beads is required" >&2
+    echo "Usage: ralph -p PLAN.md [OPTIONS]" >&2
+    echo "       ralph -b ISSUE-ID [OPTIONS]" >&2
+    exit 2
 fi
 
 # Validate max iterations is a positive integer
@@ -218,19 +207,11 @@ build_prompt() {
     fi
 
     # 2. Beads context (use bd CLI, not /beads skills - skills unavailable in -p mode)
-    if [[ "$BEADS_MODE" == "parent" ]]; then
+    if [[ -n "$BEADS_ISSUE" ]]; then
         prompt+="## Beads Workflow\n\n"
         prompt+="Working on: $BEADS_ISSUE\n\n"
         prompt+="1. Run \`bd list --status in_progress --parent $BEADS_ISSUE\` - finish in-progress tasks first\n"
         prompt+="2. If none, run \`bd ready --parent $BEADS_ISSUE\` to find the next unblocked task\n"
-        prompt+="3. Run \`bd show <id>\` to see task details\n"
-        prompt+="4. Run \`bd update <id> --status in_progress\` when starting\n"
-        prompt+="5. Run \`bd close <id>\` when done\n\n"
-        prompt+="Work on ONE task only, then exit.\n\n"
-    elif [[ "$BEADS_MODE" == "auto" ]]; then
-        prompt+="## Beads Workflow\n\n"
-        prompt+="1. Run \`bd list --status in_progress\` - finish in-progress tasks first\n"
-        prompt+="2. If none, run \`bd ready\` to find the next unblocked task\n"
         prompt+="3. Run \`bd show <id>\` to see task details\n"
         prompt+="4. Run \`bd update <id> --status in_progress\` when starting\n"
         prompt+="5. Run \`bd close <id>\` when done\n\n"
@@ -256,8 +237,7 @@ if [[ ! -f "$PROGRESS_FILE" ]]; then
         echo "# Ralph Progress Log"
         echo "Started: $(date)"
         echo "Branch: $(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo 'unknown')"
-        [[ "$BEADS_MODE" == "parent" ]] && echo "Beads Issue: $BEADS_ISSUE"
-        [[ "$BEADS_MODE" == "auto" ]] && echo "Beads Mode: auto-discovery"
+        [[ -n "$BEADS_ISSUE" ]] && echo "Beads Issue: $BEADS_ISSUE"
         echo "---"
     } > "$PROGRESS_FILE"
 fi
@@ -270,8 +250,7 @@ echo "════════════════════════�
 echo "  Max iterations:    $MAX_ITERATIONS"
 echo "  Working dir:       $WORK_DIR"
 [[ -n "$PROMPT_FILE" ]] && echo "  Prompt file:       $PROMPT_FILE"
-[[ "$BEADS_MODE" == "parent" ]] && echo "  Beads mode:        parent ($BEADS_ISSUE)"
-[[ "$BEADS_MODE" == "auto" ]] && echo "  Beads mode:        auto-discovery"
+[[ -n "$BEADS_ISSUE" ]] && echo "  Beads issue:       $BEADS_ISSUE"
 [[ -n "$RALPH_INSTRUCTIONS_FILE" ]] && echo "  Extra instructions: $RALPH_INSTRUCTIONS_FILE"
 [[ -n "$SETTINGS_RESOLVED" ]] && echo "  Settings file:     $SETTINGS_RESOLVED"
 echo "  Completion signal: $COMPLETION_SIGNAL"
