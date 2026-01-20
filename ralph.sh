@@ -330,6 +330,15 @@ while [[ $iteration -lt $MAX_ITERATIONS ]]; do
         output=$(claude "${CLAUDE_ARGS[@]}" 2>&1) || true
     fi
 
+    # Show beads progress after each iteration
+    if [[ -n "$BEADS_MODE" ]]; then
+        echo ""
+        echo "─────────────────────────────────────────────────────────"
+        echo "  Beads Status"
+        echo "─────────────────────────────────────────────────────────"
+        bd list --pretty --all 2>/dev/null || true
+    fi
+
     # Check for completion signal
     if echo "$output" | grep -qF "$COMPLETION_SIGNAL"; then
         {
