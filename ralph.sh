@@ -10,11 +10,13 @@
 #   -w, --worktree NAME         Git worktree to run in (.worktree/<name>)
 #   -s, --settings FILE         Path to Claude settings JSON file
 #   -c, --config FILE           Config file with project info (default: prd.json)
+#   -d, --debug                 Show Claude output in real-time
 #   -h, --help                  Show this help message
 #
 # Completion: Exits when output contains <promise>COMPLETE</promise>
 #
 # Examples:
+#   ralph                     # auto-discovery via bd ready
 #   ralph -b EPIC-001         # work children of EPIC-001
 #   ralph -p plan.md          # work from a plan file
 #   ralph -b EPIC-001 -i 20   # with iteration limit
@@ -34,6 +36,7 @@ BEADS_ISSUE=""
 SETTINGS_FILE=".claude/settings.local.json"
 CONFIG_FILE="prd.json"
 COMPLETION_SIGNAL="<promise>COMPLETE</promise>"
+DEBUG=false
 
 # Core ralph instructions (hardcoded for homebrew deployment)
 RALPH_CORE_INSTRUCTIONS='## Instructions
@@ -92,6 +95,10 @@ while [[ $# -gt 0 ]]; do
             CONFIG_FILE="$2"
             shift 2
             ;;
+        -d|--debug)
+            DEBUG=true
+            shift
+            ;;
         -h|--help)
             sed -n '2,/^$/p' "$0" | sed 's/^# //' | sed 's/^#//'
             exit 0
@@ -103,12 +110,13 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Validate required arguments - need prompt or beads issue
-if [[ -z "$PROMPT_FILE" ]] && [[ -z "$BEADS_ISSUE" ]]; then
-    echo "Error: -p/--prompt or -b/--beads is required" >&2
-    echo "Usage: ralph -p PLAN.md [OPTIONS]" >&2
-    echo "       ralph -b ISSUE-ID [OPTIONS]" >&2
-    exit 2
+# Determine mode based on arguments
+BEADS_MODE=""
+if [[ -n "$BEADS_ISSUE" ]]; then
+    BEADS_MODE="parent"
+elif [[ -z "$PROMPT_FILE" ]]; then
+    # No prompt and no beads issue - use auto-discovery mode
+    BEADS_MODE="auto"
 fi
 
 # Validate max iterations is a positive integer
@@ -207,11 +215,19 @@ build_prompt() {
     fi
 
     # 2. Beads context (use bd CLI, not /beads skills - skills unavailable in -p mode)
-    if [[ -n "$BEADS_ISSUE" ]]; then
+    if [[ "$BEADS_MODE" == "parent" ]]; then
         prompt+="## Beads Workflow\n\n"
         prompt+="Working on: $BEADS_ISSUE\n\n"
         prompt+="1. Run \`bd list --status in_progress --parent $BEADS_ISSUE\` - finish in-progress tasks first\n"
         prompt+="2. If none, run \`bd ready --parent $BEADS_ISSUE\` to find the next unblocked task\n"
+        prompt+="3. Run \`bd show <id>\` to see task details\n"
+        prompt+="4. Run \`bd update <id> --status in_progress\` when starting\n"
+        prompt+="5. Run \`bd close <id>\` when done\n\n"
+        prompt+="Work on ONE task only, then exit.\n\n"
+    elif [[ "$BEADS_MODE" == "auto" ]]; then
+        prompt+="## Beads Workflow\n\n"
+        prompt+="1. Run \`bd list --status in_progress\` - finish in-progress tasks first\n"
+        prompt+="2. If none, run \`bd ready\` to find the next unblocked task\n"
         prompt+="3. Run \`bd show <id>\` to see task details\n"
         prompt+="4. Run \`bd update <id> --status in_progress\` when starting\n"
         prompt+="5. Run \`bd close <id>\` when done\n\n"
@@ -237,7 +253,8 @@ if [[ ! -f "$PROGRESS_FILE" ]]; then
         echo "# Ralph Progress Log"
         echo "Started: $(date)"
         echo "Branch: $(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo 'unknown')"
-        [[ -n "$BEADS_ISSUE" ]] && echo "Beads Issue: $BEADS_ISSUE"
+        [[ "$BEADS_MODE" == "parent" ]] && echo "Beads Issue: $BEADS_ISSUE"
+        [[ "$BEADS_MODE" == "auto" ]] && echo "Beads Mode: auto-discovery"
         echo "---"
     } > "$PROGRESS_FILE"
 fi
@@ -250,10 +267,12 @@ echo "════════════════════════�
 echo "  Max iterations:    $MAX_ITERATIONS"
 echo "  Working dir:       $WORK_DIR"
 [[ -n "$PROMPT_FILE" ]] && echo "  Prompt file:       $PROMPT_FILE"
-[[ -n "$BEADS_ISSUE" ]] && echo "  Beads issue:       $BEADS_ISSUE"
+[[ "$BEADS_MODE" == "parent" ]] && echo "  Beads mode:        parent ($BEADS_ISSUE)"
+[[ "$BEADS_MODE" == "auto" ]] && echo "  Beads mode:        auto-discovery"
 [[ -n "$RALPH_INSTRUCTIONS_FILE" ]] && echo "  Extra instructions: $RALPH_INSTRUCTIONS_FILE"
 [[ -n "$SETTINGS_RESOLVED" ]] && echo "  Settings file:     $SETTINGS_RESOLVED"
 echo "  Completion signal: $COMPLETION_SIGNAL"
+[[ "$DEBUG" == true ]] && echo "  Debug mode:        enabled"
 echo "═══════════════════════════════════════════════════════"
 echo ""
 
@@ -276,11 +295,40 @@ while [[ $iteration -lt $MAX_ITERATIONS ]]; do
     COMBINED_PROMPT=$(build_prompt)
 
     # Build Claude command
-    CLAUDE_ARGS=("-p" "$COMBINED_PROMPT")
+    CLAUDE_ARGS=("--permission-mode" "acceptEdits" "-p" "$COMBINED_PROMPT")
     [[ -n "$SETTINGS_RESOLVED" ]] && CLAUDE_ARGS=("--settings" "$SETTINGS_RESOLVED" "${CLAUDE_ARGS[@]}")
 
     # Run Claude and capture output
-    output=$(claude "${CLAUDE_ARGS[@]}" 2>&1 | tee /dev/stderr) || true
+    if [[ "$DEBUG" == true ]]; then
+        # Stream output through jq for pretty printing, save to logs dir
+        mkdir -p "$WORK_DIR/.ralph-logs"
+        DEBUG_TMP=$(mktemp "$WORK_DIR/.ralph-logs/tmp.XXXXXX")
+        claude "${CLAUDE_ARGS[@]}" --verbose --output-format stream-json 2>&1 | tee "$DEBUG_TMP" | \
+            jq -r --unbuffered '
+                if .type == "assistant" and .message.content then
+                    .message.content[] |
+                    if .type == "text" then "\n>>> " + .text
+                    elif .type == "tool_use" then "\n[tool] " + .name + ": " + (.input | tostring | .[0:200])
+                    else empty end
+                elif .type == "user" and .message.content then
+                    .message.content[] |
+                    if .type == "tool_result" then "[result] " + ((.content // "") | tostring | .[0:200])
+                    else empty end
+                else empty end
+            ' 2>/dev/null || true
+        output=$(cat "$DEBUG_TMP")
+        # Rename to include session_id if we can extract it
+        SESSION_ID=$(head -5 "$DEBUG_TMP" | jq -r 'select(.session_id) | .session_id' 2>/dev/null | head -1)
+        if [[ -n "$SESSION_ID" ]]; then
+            mv "$DEBUG_TMP" "$WORK_DIR/.ralph-logs/${SESSION_ID}.json"
+            echo "Debug log: .ralph-logs/${SESSION_ID}.json"
+        else
+            mv "$DEBUG_TMP" "$WORK_DIR/.ralph-logs/iteration-${iteration}.json"
+            echo "Debug log: .ralph-logs/iteration-${iteration}.json"
+        fi
+    else
+        output=$(claude "${CLAUDE_ARGS[@]}" 2>&1) || true
+    fi
 
     # Check for completion signal
     if echo "$output" | grep -qF "$COMPLETION_SIGNAL"; then
