@@ -38,6 +38,58 @@ CONFIG_FILE="prd.json"
 COMPLETION_SIGNAL="<promise>COMPLETE</promise>"
 DEBUG=false
 
+# Security: Validate path doesn't contain traversal sequences
+# Returns 0 if safe, 1 if unsafe
+validate_path_component() {
+    local path="$1"
+    local context="$2"
+
+    # Reject empty paths
+    if [[ -z "$path" ]]; then
+        return 0  # Empty is OK (means not provided)
+    fi
+
+    # Reject absolute paths (for relative-only parameters)
+    if [[ "$path" == /* ]]; then
+        echo "Error: $context must be a relative path, got absolute path" >&2
+        return 1
+    fi
+
+    # Reject path traversal sequences
+    if [[ "$path" == *".."* ]]; then
+        echo "Error: $context contains path traversal sequence (..)" >&2
+        return 1
+    fi
+
+    return 0
+}
+
+# Security: Validate resolved path is within expected base directory
+validate_path_within_base() {
+    local resolved_path="$1"
+    local base_dir="$2"
+    local context="$3"
+
+    # Use realpath to resolve symlinks and normalize
+    local real_resolved real_base
+    real_resolved=$(realpath -m "$resolved_path" 2>/dev/null) || {
+        echo "Error: Cannot resolve $context path" >&2
+        return 1
+    }
+    real_base=$(realpath -m "$base_dir" 2>/dev/null) || {
+        echo "Error: Cannot resolve base directory" >&2
+        return 1
+    }
+
+    # Check if resolved path starts with base directory
+    if [[ "$real_resolved" != "$real_base"* ]]; then
+        echo "Error: $context resolves outside expected directory" >&2
+        return 1
+    fi
+
+    return 0
+}
+
 # Core ralph instructions (hardcoded for homebrew deployment)
 RALPH_CORE_INSTRUCTIONS='## Instructions
 
@@ -130,7 +182,18 @@ WORK_DIR=""
 
 # 1. Check -w/--worktree argument
 if [[ -n "$WORKTREE" ]]; then
+    # Security: Validate worktree name (HIGH-1)
+    if ! validate_path_component "$WORKTREE" "worktree name"; then
+        exit 2
+    fi
+
     WORKTREE_PATH="$SCRIPT_DIR/.worktree/$WORKTREE"
+
+    # Security: Validate resolved path stays within .worktree directory
+    if ! validate_path_within_base "$WORKTREE_PATH" "$SCRIPT_DIR/.worktree" "worktree"; then
+        exit 2
+    fi
+
     if [[ -d "$WORKTREE_PATH" ]]; then
         WORK_DIR="$WORKTREE_PATH"
         echo "Using worktree: $WORK_DIR"
@@ -144,7 +207,18 @@ fi
 if [[ -z "$WORK_DIR" ]] && [[ -f "$SCRIPT_DIR/$CONFIG_FILE" ]]; then
     BRANCH_FROM_CONFIG=$(jq -r '.branchName // empty' "$SCRIPT_DIR/$CONFIG_FILE" 2>/dev/null || echo "")
     if [[ -n "$BRANCH_FROM_CONFIG" ]]; then
+        # Security: Validate branchName from config (MEDIUM-1)
+        if ! validate_path_component "$BRANCH_FROM_CONFIG" "branchName in config"; then
+            exit 2
+        fi
+
         WORKTREE_PATH="$SCRIPT_DIR/.worktree/$BRANCH_FROM_CONFIG"
+
+        # Security: Validate resolved path stays within .worktree directory
+        if ! validate_path_within_base "$WORKTREE_PATH" "$SCRIPT_DIR/.worktree" "branchName worktree"; then
+            exit 2
+        fi
+
         if [[ -d "$WORKTREE_PATH" ]]; then
             WORK_DIR="$WORKTREE_PATH"
             echo "Using worktree from $CONFIG_FILE: $WORK_DIR"
@@ -205,45 +279,47 @@ elif [[ -f "$SETTINGS_FILE" ]]; then
 fi
 
 # Build the combined prompt
+# Security: Uses printf '%s' to avoid interpreting escape sequences in user content (MEDIUM-2)
 build_prompt() {
     local prompt=""
+    local nl=$'\n'
 
     # 1. User's plan/prompt (if provided)
     if [[ -n "$PROMPT_FILE" ]]; then
         prompt+="$(cat "$PROMPT_FILE")"
-        prompt+="\n\n"
+        prompt+="${nl}${nl}"
     fi
 
     # 2. Beads context (use bd CLI, not /beads skills - skills unavailable in -p mode)
     if [[ "$BEADS_MODE" == "parent" ]]; then
-        prompt+="## Beads Workflow\n\n"
-        prompt+="Working on: $BEADS_ISSUE\n\n"
-        prompt+="1. Run \`bd list --status in_progress --parent $BEADS_ISSUE\` - finish in-progress tasks first\n"
-        prompt+="2. If none, run \`bd ready --parent $BEADS_ISSUE\` to find the next unblocked task\n"
-        prompt+="3. Run \`bd show <id>\` to see task details\n"
-        prompt+="4. Run \`bd update <id> --status in_progress\` when starting\n"
-        prompt+="5. Run \`bd close <id>\` when done\n\n"
-        prompt+="Work on ONE task only, then exit.\n\n"
+        prompt+="## Beads Workflow${nl}${nl}"
+        prompt+="Working on: $BEADS_ISSUE${nl}${nl}"
+        prompt+="1. Run \`bd list --status in_progress --parent $BEADS_ISSUE\` - finish in-progress tasks first${nl}"
+        prompt+="2. If none, run \`bd ready --parent $BEADS_ISSUE\` to find the next unblocked task${nl}"
+        prompt+="3. Run \`bd show <id>\` to see task details${nl}"
+        prompt+="4. Run \`bd update <id> --status in_progress\` when starting${nl}"
+        prompt+="5. Run \`bd close <id>\` when done${nl}${nl}"
+        prompt+="Work on ONE task only, then exit.${nl}${nl}"
     elif [[ "$BEADS_MODE" == "auto" ]]; then
-        prompt+="## Beads Workflow\n\n"
-        prompt+="1. Run \`bd list --status in_progress\` - finish in-progress tasks first\n"
-        prompt+="2. If none, run \`bd ready\` to find the next unblocked task\n"
-        prompt+="3. Run \`bd show <id>\` to see task details\n"
-        prompt+="4. Run \`bd update <id> --status in_progress\` when starting\n"
-        prompt+="5. Run \`bd close <id>\` when done\n\n"
-        prompt+="Work on ONE task only, then exit.\n\n"
+        prompt+="## Beads Workflow${nl}${nl}"
+        prompt+="1. Run \`bd list --status in_progress\` - finish in-progress tasks first${nl}"
+        prompt+="2. If none, run \`bd ready\` to find the next unblocked task${nl}"
+        prompt+="3. Run \`bd show <id>\` to see task details${nl}"
+        prompt+="4. Run \`bd update <id> --status in_progress\` when starting${nl}"
+        prompt+="5. Run \`bd close <id>\` when done${nl}${nl}"
+        prompt+="Work on ONE task only, then exit.${nl}${nl}"
     fi
 
     # 3. Ralph instructions (custom file overwrites defaults)
     if [[ -n "$RALPH_INSTRUCTIONS_FILE" ]]; then
         prompt+="$(cat "$RALPH_INSTRUCTIONS_FILE")"
-        prompt+="\n"
+        prompt+="${nl}"
     else
         prompt+="$RALPH_CORE_INSTRUCTIONS"
-        prompt+="\n\n"
+        prompt+="${nl}${nl}"
     fi
 
-    echo -e "$prompt"
+    printf '%s\n' "$prompt"
 }
 
 # Initialize progress file

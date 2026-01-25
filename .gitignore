@@ -1,0 +1,19 @@
+# Ralph debug logs (may contain sensitive session data)
+.ralph-logs/
+
+# Progress file (session-specific)
+progress.txt
+
+# Worktrees
+.worktree/
+
+# Editor files
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
