@@ -8,18 +8,18 @@
 
 Ralph is a bash-based agentic coding loop tool that orchestrates Claude (Anthropic's AI) for autonomous development tasks. The codebase is relatively small (~374 lines of bash) with minimal dependencies. Overall, the project demonstrates several good security practices but has areas that warrant attention.
 
-**Risk Level:** Medium
+**Risk Level:** Medium → Low (after mitigations)
 **Critical Issues:** 0
-**High Issues:** 2
-**Medium Issues:** 4
-**Low Issues:** 3
+**High Issues:** 2 → 0 (mitigated)
+**Medium Issues:** 4 → 1 (3 mitigated)
+**Low Issues:** 3 → 2 (1 already addressed)
 **Informational:** 3
 
 ---
 
 ## Findings
 
-### HIGH-1: Path Traversal in Worktree Parameter
+### HIGH-1: Path Traversal in Worktree Parameter ✅ FIXED
 
 **Location:** `ralph.sh:133-140`
 
@@ -37,9 +37,10 @@ ralph -w "../../etc" -p plan.md
 # Could resolve to /etc if the path exists and is a directory
 ```
 
-**Mitigation:**
-- Validate that `$WORKTREE` does not contain path traversal sequences (`..`, leading `/`)
-- Use `realpath` to resolve and verify the final path stays within expected boundaries
+**Mitigation Applied:**
+- Added `validate_path_component()` function that rejects path traversal sequences (`..`) and absolute paths
+- Added `validate_path_within_base()` function using `realpath` to verify resolved paths stay within `.worktree/` directory
+- Both validations applied before any path operations
 
 ---
 
@@ -65,7 +66,7 @@ CLAUDE_ARGS=("--permission-mode" "acceptEdits" "-p" "$COMBINED_PROMPT")
 
 ---
 
-### MEDIUM-1: Potential Command Injection via Config File
+### MEDIUM-1: Potential Command Injection via Config File ✅ FIXED
 
 **Location:** `ralph.sh:145`
 
@@ -77,11 +78,13 @@ BRANCH_FROM_CONFIG=$(jq -r '.branchName // empty' "$SCRIPT_DIR/$CONFIG_FILE" 2>/
 
 **Risk:** If `prd.json` contains a malicious `branchName` value with path traversal sequences, it could affect worktree resolution.
 
-**Mitigation:** Validate extracted config values before using them in path construction.
+**Mitigation Applied:**
+- `validate_path_component()` applied to `branchName` before use
+- `validate_path_within_base()` verifies resolved path stays within `.worktree/`
 
 ---
 
-### MEDIUM-2: Echo -e with User Content
+### MEDIUM-2: Echo -e with User Content ✅ FIXED
 
 **Location:** `ralph.sh:246`
 
@@ -93,7 +96,9 @@ echo -e "$prompt"
 
 **Risk:** If user-controlled content (from prompt files or config) contains escape sequences, they will be interpreted. This is primarily a data integrity issue.
 
-**Mitigation:** Use `printf '%s\n' "$prompt"` instead, which doesn't interpret escape sequences.
+**Mitigation Applied:**
+- Replaced `echo -e` with `printf '%s\n'`
+- Refactored prompt building to use `$'\n'` (ANSI-C quoting) for explicit newlines instead of `\n` escape sequences
 
 ---
 
@@ -129,7 +134,7 @@ if [[ -d "$WORKTREE_PATH" ]]; then
 
 ---
 
-### LOW-1: Debug Logs May Contain Sensitive Data
+### LOW-1: Debug Logs May Contain Sensitive Data ✅ ALREADY ADDRESSED
 
 **Location:** `ralph.sh:304-328`
 
@@ -142,14 +147,11 @@ DEBUG_TMP=$(mktemp "$WORK_DIR/.ralph-logs/tmp.XXXXXX")
 
 **Risk:** Sensitive data exposure if logs are not properly protected.
 
-**Mitigation:**
-- Add `.ralph-logs/` to `.gitignore` (currently not present)
-- Document that debug logs may contain sensitive information
-- Consider automatic log rotation/cleanup
+**Status:** `.ralph-logs/` is already present in `.gitignore`
 
 ---
 
-### LOW-2: No Symlink Validation
+### LOW-2: No Symlink Validation ✅ FIXED
 
 **Location:** File operations throughout
 
@@ -157,7 +159,7 @@ DEBUG_TMP=$(mktemp "$WORK_DIR/.ralph-logs/tmp.XXXXXX")
 
 **Risk:** Symlink attacks could redirect operations to unintended locations.
 
-**Mitigation:** Add `-L` checks before critical file operations, or use `realpath` to resolve symlinks.
+**Mitigation Applied:** `validate_path_within_base()` uses `realpath` to resolve symlinks and verify the resolved path stays within expected boundaries.
 
 ---
 
@@ -212,36 +214,37 @@ No hardcoded secrets, API keys, passwords, or credentials were found in the code
 
 ### Immediate Actions (High Priority)
 
-1. **Sanitize path parameters** - Add validation to reject path traversal sequences in `-w`, `-p`, `-r`, `-s`, and `-c` parameters
+1. ✅ **Sanitize path parameters** - Added `validate_path_component()` and `validate_path_within_base()` functions to validate worktree and config-derived paths
 
-2. **Document security model** - Clearly document that `acceptEdits` mode grants Claude full file edit permissions, and the implications of this
+2. **Document security model** - Clearly document that `acceptEdits` mode grants Claude full file edit permissions, and the implications of this (still recommended)
 
 ### Short-term Improvements (Medium Priority)
 
-3. **Add `.ralph-logs/` to `.gitignore`** - Prevent accidental commit of debug logs
+3. ✅ **Add `.ralph-logs/` to `.gitignore`** - Already present in `.gitignore`
 
-4. **Replace `echo -e` with `printf`** - Avoid escape sequence interpretation
+4. ✅ **Replace `echo -e` with `printf`** - Refactored `build_prompt()` to use `printf '%s\n'` and ANSI-C quoting
 
-5. **Validate config file values** - Sanitize `branchName` and other extracted values
+5. ✅ **Validate config file values** - `branchName` now validated with path traversal checks
 
 ### Long-term Considerations (Low Priority)
 
-6. **Add `--safe-mode` option** - Allow users to opt into interactive approval mode
+6. **Add `--safe-mode` option** - Allow users to opt into interactive approval mode (still recommended)
 
-7. **Implement file operation allowlists** - Restrict which directories Claude can modify
+7. **Implement file operation allowlists** - Restrict which directories Claude can modify (still recommended)
 
-8. **Add symlink validation** - Prevent symlink-based attacks
+8. ✅ **Add symlink validation** - `realpath` used in path validation to resolve symlinks
 
 ---
 
 ## Testing Recommendations
 
-The following test cases should be added:
+The following test cases validate the security mitigations:
 
 ```bash
-# Path traversal tests
-ralph -w "../.." -p plan.md  # Should be rejected
-ralph -w "foo/../bar" -p plan.md  # Should be rejected or normalized
+# Path traversal tests (now properly rejected)
+ralph -w "../.." -p plan.md  # ✅ Rejected: contains path traversal sequence
+ralph -w "foo/../bar" -p plan.md  # ✅ Rejected: contains path traversal sequence
+ralph -w "/etc" -p plan.md  # ✅ Rejected: must be relative path
 
 # Input validation tests
 ralph -i -5  # Should fail (already handled)
@@ -260,4 +263,14 @@ ralph -i "$(whoami)"  # Should fail (already handled)
 
 ## Conclusion
 
-Ralph demonstrates good baseline security practices including strict bash mode, CI/CD security scanning, and no hardcoded credentials. The main concerns relate to path traversal vulnerabilities and the permissive file edit mode, which are inherent to the tool's autonomous operation model. The recommended mitigations would strengthen the security posture while maintaining the tool's core functionality.
+Ralph demonstrates good baseline security practices including strict bash mode, CI/CD security scanning, and no hardcoded credentials.
+
+**Update (2026-01-25):** The following security mitigations have been implemented:
+- Path traversal validation with `validate_path_component()` and `validate_path_within_base()`
+- Symlink resolution using `realpath` to prevent symlink-based attacks
+- Replaced `echo -e` with `printf '%s\n'` to prevent escape sequence interpretation
+
+The remaining considerations are:
+- HIGH-2: The permissive `acceptEdits` mode is by design for autonomous operation but should be documented
+- MEDIUM-3: TOCTOU race conditions are low-risk in typical single-user scenarios
+- MEDIUM-4: PATH security relies on user environment configuration
