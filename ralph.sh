@@ -300,6 +300,7 @@ build_prompt() {
         prompt+="4. Run \`bd update <id> --status in_progress\` when starting${nl}"
         prompt+="5. Run \`bd close <id>\` when done${nl}${nl}"
         prompt+="Work on ONE task only, then exit.${nl}${nl}"
+        prompt+="Only output the completion signal when ALL tasks under $BEADS_ISSUE are done.${nl}${nl}"
     elif [[ "$BEADS_MODE" == "auto" ]]; then
         prompt+="## Beads Workflow${nl}${nl}"
         prompt+="1. Run \`bd list --status in_progress\` - finish in-progress tasks first${nl}"
@@ -308,6 +309,7 @@ build_prompt() {
         prompt+="4. Run \`bd update <id> --status in_progress\` when starting${nl}"
         prompt+="5. Run \`bd close <id>\` when done${nl}${nl}"
         prompt+="Work on ONE task only, then exit.${nl}${nl}"
+        prompt+="Only output the completion signal when ALL tasks are done.${nl}${nl}"
     fi
 
     # 3. Ralph instructions (custom file overwrites defaults)
