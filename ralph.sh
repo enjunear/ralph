@@ -414,7 +414,11 @@ while [[ $iteration -lt $MAX_ITERATIONS ]]; do
         echo "─────────────────────────────────────────────────────────"
         echo "  Beads Status"
         echo "─────────────────────────────────────────────────────────"
-        bd list --pretty --all 2>/dev/null || true
+        if [[ "$BEADS_MODE" == "parent" ]]; then 
+            && bd list --pretty --parent $BEADS_ISSUE --limit 0 2>/dev/null || true
+        elif [[ "$BEADS_MODE" == "auto" ]]; then 
+            && bd list --pretty --limit 0 2>/dev/null || true
+        fi
     fi
 
     # Check for completion signal
