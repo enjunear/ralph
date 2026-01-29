@@ -90,31 +90,37 @@ validate_path_within_base() {
     return 0
 }
 
-# Core ralph instructions (hardcoded for homebrew deployment)
-RALPH_CORE_INSTRUCTIONS='## Instructions
+# Core instructions for beads mode (hardcoded for homebrew deployment)
+# Note: BEADS_COMPLETION_SIGNAL is set dynamically in build_prompt based on parent vs auto mode
+RALPH_BEADS_INSTRUCTIONS='## Instructions
 
-**FIRST: Read progress.txt** to see what has been completed. Skip exploration for completed work.
+### Workflow
+1. **Find your task** - `bd list --status in_progress` first, then `bd ready`
+2. **Read it** - `bd show <id>` for full context
+3. **Claim it** - `bd update <id> --status in_progress`
+4. **Do the work** - make atomic commits
+5. **Document and close** - `bd update <id> --notes "Summary of work done"` then `bd close <id>`
+6. **Stop** - do not continue to the next task
 
-Follow these rules strictly:
+Work ONE task, then stop.'
 
-1. **Focus on ONE task at a time** - Complete the current task fully, then exit
-2. **Use beads for tracking** - If using beads, update status and add comments as you progress
-3. **Signal completion correctly** - Output <promise>COMPLETE</promise> ONLY when ALL tasks are finished
-4. **Handle blockers gracefully** - If blocked, document why and exit without signaling completion
-5. **Commit frequently** - Make atomic commits as you complete logical units of work
-6. **Stay focused** - Do not refactor unrelated code or add unrequested features
+# Core instructions for plan file mode (non-beads)
+RALPH_PLAN_INSTRUCTIONS='## Instructions
 
-After completing each task, append to progress.txt:
-- Task completed (with issue ID if using beads)
-- Key decisions made
-- Files changed
-- Blockers or notes for next iteration
-Keep entries concise. This file helps future iterations skip exploration.
+**Read progress.txt first** - see what is done, skip re-exploration.
 
-When ALL tasks are done, output:
-<promise>COMPLETE</promise>
+### Workflow
+1. **Find your task** - read progress.txt, find the next incomplete step
+2. **Do the work** - make atomic commits
+3. **Log to progress.txt** - task, decisions, files changed
+4. **Stop** - do not continue to the next task
 
-Do NOT output the completion signal until everything is truly done.'
+Work ONE task, then stop.
+
+### Completion Signal
+Only when ALL tasks in the plan are done, output `<promise>COMPLETE</promise>`.
+
+**CRITICAL**: The signal means ALL work is finished. Do NOT output it prematurely.'
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -292,49 +298,50 @@ build_prompt() {
 
     # 2. Beads context (use bd CLI, not /beads skills - skills unavailable in -p mode)
     if [[ "$BEADS_MODE" == "parent" ]]; then
-        prompt+="## Beads Workflow${nl}${nl}"
-        prompt+="Working on: $BEADS_ISSUE${nl}${nl}"
-        prompt+="1. Run \`bd list --status in_progress --parent $BEADS_ISSUE\` - finish in-progress tasks first${nl}"
-        prompt+="2. If none, run \`bd ready --parent $BEADS_ISSUE\` to find the next unblocked task${nl}"
-        prompt+="3. Run \`bd show <id>\` to see task details${nl}"
-        prompt+="4. Run \`bd update <id> --status in_progress\` when starting${nl}"
-        prompt+="5. Run \`bd close <id>\` when done${nl}${nl}"
-        prompt+="Work on ONE task only, then exit.${nl}${nl}"
-        prompt+="Only output the completion signal when ALL tasks under $BEADS_ISSUE are done.${nl}${nl}"
+        prompt+="## Beads Workflow (parent: $BEADS_ISSUE)${nl}${nl}"
+        prompt+="1. \`bd list --status in_progress --parent $BEADS_ISSUE\` - finish in-progress first${nl}"
+        prompt+="2. \`bd ready --parent $BEADS_ISSUE\` - if none, pick next unblocked task${nl}"
+        prompt+="3. \`bd show <id>\` -> \`bd update <id> --status in_progress\` -> work -> \`bd update <id> --notes \"...\"\` -> \`bd close <id>\`${nl}${nl}"
+        prompt+="Work ONE task, then stop.${nl}${nl}"
+        prompt+="### Completion Signal${nl}"
+        prompt+="Only when ALL tasks under $BEADS_ISSUE are done: \`bd close $BEADS_ISSUE\`, then output \`<promise>COMPLETE</promise>\`.${nl}${nl}"
     elif [[ "$BEADS_MODE" == "auto" ]]; then
         prompt+="## Beads Workflow${nl}${nl}"
-        prompt+="1. Run \`bd list --status in_progress\` - finish in-progress tasks first${nl}"
-        prompt+="2. If none, run \`bd ready\` to find the next unblocked task${nl}"
-        prompt+="3. Run \`bd show <id>\` to see task details${nl}"
-        prompt+="4. Run \`bd update <id> --status in_progress\` when starting${nl}"
-        prompt+="5. Run \`bd close <id>\` when done${nl}${nl}"
-        prompt+="Work on ONE task only, then exit.${nl}${nl}"
-        prompt+="Only output the completion signal when ALL tasks are done.${nl}${nl}"
+        prompt+="1. \`bd list --status in_progress\` - finish in-progress first${nl}"
+        prompt+="2. \`bd ready\` - if none, pick next unblocked task${nl}"
+        prompt+="3. \`bd show <id>\` -> \`bd update <id> --status in_progress\` -> work -> \`bd update <id> --notes \"...\"\` -> \`bd close <id>\`${nl}${nl}"
+        prompt+="Work ONE task, then stop.${nl}${nl}"
+        prompt+="### Completion Signal${nl}"
+        prompt+="Only when ALL tasks are done (\`bd ready\` returns nothing), output \`<promise>COMPLETE</promise>\`.${nl}${nl}"
     fi
 
-    # 3. Ralph instructions (custom file overwrites defaults)
+    # 3. Ralph instructions (custom file overwrites defaults, otherwise mode-specific)
     if [[ -n "$RALPH_INSTRUCTIONS_FILE" ]]; then
         prompt+="$(cat "$RALPH_INSTRUCTIONS_FILE")"
         prompt+="${nl}"
+    elif [[ -n "$BEADS_MODE" ]]; then
+        prompt+="$RALPH_BEADS_INSTRUCTIONS"
+        prompt+="${nl}${nl}"
     else
-        prompt+="$RALPH_CORE_INSTRUCTIONS"
+        prompt+="$RALPH_PLAN_INSTRUCTIONS"
         prompt+="${nl}${nl}"
     fi
 
     printf '%s\n' "$prompt"
 }
 
-# Initialize progress file
-PROGRESS_FILE="$WORK_DIR/progress.txt"
-if [[ ! -f "$PROGRESS_FILE" ]]; then
-    {
-        echo "# Ralph Progress Log"
-        echo "Started: $(date)"
-        echo "Branch: $(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo 'unknown')"
-        [[ "$BEADS_MODE" == "parent" ]] && echo "Beads Issue: $BEADS_ISSUE"
-        [[ "$BEADS_MODE" == "auto" ]] && echo "Beads Mode: auto-discovery"
-        echo "---"
-    } > "$PROGRESS_FILE"
+# Initialize progress file (non-beads mode only - beads uses bd notes for tracking)
+PROGRESS_FILE=""
+if [[ -z "$BEADS_MODE" ]]; then
+    PROGRESS_FILE="$WORK_DIR/progress.txt"
+    if [[ ! -f "$PROGRESS_FILE" ]]; then
+        {
+            echo "# Ralph Progress Log"
+            echo "Started: $(date)"
+            echo "Branch: $(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo 'unknown')"
+            echo "---"
+        } > "$PROGRESS_FILE"
+    fi
 fi
 
 # Display startup banner
@@ -363,11 +370,13 @@ while [[ $iteration -lt $MAX_ITERATIONS ]]; do
     echo "  Iteration $iteration of $MAX_ITERATIONS"
     echo "═══════════════════════════════════════════════════════"
 
-    # Log iteration start
-    {
-        echo ""
-        echo "### Iteration $iteration - $(date)"
-    } >> "$PROGRESS_FILE"
+    # Log iteration start (non-beads mode only)
+    if [[ -n "$PROGRESS_FILE" ]]; then
+        {
+            echo ""
+            echo "### Iteration $iteration - $(date)"
+        } >> "$PROGRESS_FILE"
+    fi
 
     # Build the combined prompt
     COMBINED_PROMPT=$(build_prompt)
@@ -414,19 +423,21 @@ while [[ $iteration -lt $MAX_ITERATIONS ]]; do
         echo "─────────────────────────────────────────────────────────"
         echo "  Beads Status"
         echo "─────────────────────────────────────────────────────────"
-        if [[ "$BEADS_MODE" == "parent" ]]; then 
-            && bd list --pretty --parent $BEADS_ISSUE --limit 0 2>/dev/null || true
-        elif [[ "$BEADS_MODE" == "auto" ]]; then 
-            && bd list --pretty --limit 0 2>/dev/null || true
+        if [[ "$BEADS_MODE" == "parent" ]]; then
+            bd list --pretty --parent "$BEADS_ISSUE" --limit 0 2>/dev/null || true
+        elif [[ "$BEADS_MODE" == "auto" ]]; then
+            bd list --pretty --limit 0 2>/dev/null || true
         fi
     fi
 
     # Check for completion signal
     if echo "$output" | grep -qF "$COMPLETION_SIGNAL"; then
-        {
-            echo ""
-            echo "### COMPLETED - $(date)"
-        } >> "$PROGRESS_FILE"
+        if [[ -n "$PROGRESS_FILE" ]]; then
+            {
+                echo ""
+                echo "### COMPLETED - $(date)"
+            } >> "$PROGRESS_FILE"
+        fi
 
         echo ""
         echo "═══════════════════════════════════════════════════════"
@@ -442,14 +453,20 @@ while [[ $iteration -lt $MAX_ITERATIONS ]]; do
 done
 
 # Max iterations reached
-{
-    echo ""
-    echo "### MAX ITERATIONS REACHED - $(date)"
-} >> "$PROGRESS_FILE"
+if [[ -n "$PROGRESS_FILE" ]]; then
+    {
+        echo ""
+        echo "### MAX ITERATIONS REACHED - $(date)"
+    } >> "$PROGRESS_FILE"
+fi
 
 echo ""
 echo "═══════════════════════════════════════════════════════"
 echo "  Ralph reached max iterations ($MAX_ITERATIONS)"
-echo "  Check $PROGRESS_FILE for status"
+if [[ -n "$PROGRESS_FILE" ]]; then
+    echo "  Check $PROGRESS_FILE for status"
+else
+    echo "  Check beads status with: bd list"
+fi
 echo "═══════════════════════════════════════════════════════"
 exit 1
