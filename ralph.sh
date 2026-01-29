@@ -91,18 +91,13 @@ validate_path_within_base() {
 }
 
 # Core instructions for beads mode (hardcoded for homebrew deployment)
-# Note: BEADS_COMPLETION_SIGNAL is set dynamically in build_prompt based on parent vs auto mode
+# Note: Completion signal is injected dynamically in build_prompt based on parent vs auto mode
 RALPH_BEADS_INSTRUCTIONS='## Instructions
 
-### Workflow
-1. **Find your task** - `bd list --status in_progress` first, then `bd ready`
-2. **Read it** - `bd show <id>` for full context
-3. **Claim it** - `bd update <id> --status in_progress`
-4. **Do the work** - make atomic commits
-5. **Document and close** - `bd update <id> --notes "Summary of work done"` then `bd close <id>`
-6. **Stop** - do not continue to the next task
-
-Work ONE task, then stop.'
+- Use `bd show <id>` to read full task context before starting
+- Make atomic commits as you complete work
+- Document your work with `bd update <id> --notes "..."`
+- Do not continue to the next task after completing one'
 
 # Core instructions for plan file mode (non-beads)
 RALPH_PLAN_INSTRUCTIONS='## Instructions
