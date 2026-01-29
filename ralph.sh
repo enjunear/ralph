@@ -3,13 +3,13 @@
 # ralph - Agentic coding loop with beads integration
 #
 # Usage: ralph [OPTIONS]
-#   -p, --prompt FILE           Plan/prompt file (required unless -b provided)
+#   -p, --plan FILE             Plan/prompt file (content prepended to instructions)
+#   --prd FILE                  PRD JSON file (default: prd.json if exists)
 #   -b, --beads ISSUE_ID        Beads epic or parent issue to work through
 #   -r, --ralph-instructions    Custom instructions file (overwrites defaults)
 #   -i, --max-iterations N      Maximum number of iterations (default: 10)
 #   -w, --worktree NAME         Git worktree to run in (.worktree/<name>)
 #   -s, --settings FILE         Path to Claude settings JSON file
-#   -c, --config FILE           Config file with project info (default: prd.json)
 #   -d, --debug                 Show Claude output in real-time
 #   -h, --help                  Show this help message
 #
@@ -19,6 +19,7 @@
 #   ralph                     # auto-discovery via bd ready
 #   ralph -b EPIC-001         # work children of EPIC-001
 #   ralph -p plan.md          # work from a plan file
+#   ralph --prd prd.json      # work from a PRD file
 #   ralph -b EPIC-001 -i 20   # with iteration limit
 #
 
@@ -30,11 +31,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Defaults
 MAX_ITERATIONS=10
 WORKTREE=""
-PROMPT_FILE=""
+PLAN_FILE=""
+PRD_FILE="prd.json"
 RALPH_INSTRUCTIONS_FILE=""
 BEADS_ISSUE=""
 SETTINGS_FILE=".claude/settings.local.json"
-CONFIG_FILE="prd.json"
 COMPLETION_SIGNAL="<promise>COMPLETE</promise>"
 DEBUG=false
 
@@ -90,37 +91,48 @@ validate_path_within_base() {
     return 0
 }
 
-# Core ralph instructions (hardcoded for homebrew deployment)
-RALPH_CORE_INSTRUCTIONS='## Instructions
+# Core instructions for plan file mode
+# Note: PLAN_FILE_PATH is substituted in build_prompt
+RALPH_PLAN_INSTRUCTIONS='You are working through the plan.
 
-**FIRST: Read progress.txt** to see what has been completed. Skip exploration for completed work.
+- Read `@PLAN_FILE_PATH` for the full plan
+- Read `progress.txt` to see what has been completed
+- Find the next incomplete task in the plan
+- Make atomic commits as you complete work
+- Log to `progress.txt`: task completed, key decisions, files changed
 
-Follow these rules strictly:
+STOP work, do not progress with any other tasks.
 
-1. **Focus on ONE task at a time** - Complete the current task fully, then exit
-2. **Use beads for tracking** - If using beads, update status and add comments as you progress
-3. **Signal completion correctly** - Output <promise>COMPLETE</promise> ONLY when ALL tasks are finished
-4. **Handle blockers gracefully** - If blocked, document why and exit without signaling completion
-5. **Commit frequently** - Make atomic commits as you complete logical units of work
-6. **Stay focused** - Do not refactor unrelated code or add unrequested features
+## Completion
 
-After completing each task, append to progress.txt:
-- Task completed (with issue ID if using beads)
-- Key decisions made
-- Files changed
-- Blockers or notes for next iteration
-Keep entries concise. This file helps future iterations skip exploration.
+Only when ALL tasks in the plan are done, output `<promise>COMPLETE</promise>`.'
 
-When ALL tasks are done, output:
-<promise>COMPLETE</promise>
+# Core instructions for PRD file mode
+# Note: PRD_FILE_PATH is substituted in build_prompt
+RALPH_PRD_INSTRUCTIONS='You are working through the PRD.
 
-Do NOT output the completion signal until everything is truly done.'
+- Read `@PRD_FILE_PATH` for the full project requirements
+- Read `progress.txt` to see what has been completed
+- Find the next incomplete task in the PRD where `passing:false`
+- Make atomic commits as you complete work
+- Log to `progress.txt`: task completed, key decisions, files changed
+- When the requirement is fulfilled, set `passing: true` for that requirement.
+
+STOP work, do not progress with any other tasks.
+
+## Completion
+
+Only when ALL tasks in the PRD are done, output `<promise>COMPLETE</promise>`.'
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
-        -p|--prompt)
-            PROMPT_FILE="$2"
+        -p|--plan)
+            PLAN_FILE="$2"
+            shift 2
+            ;;
+        --prd)
+            PRD_FILE="$2"
             shift 2
             ;;
         -b|--beads)
@@ -143,10 +155,6 @@ while [[ $# -gt 0 ]]; do
             SETTINGS_FILE="$2"
             shift 2
             ;;
-        -c|--config)
-            CONFIG_FILE="$2"
-            shift 2
-            ;;
         -d|--debug)
             DEBUG=true
             shift
@@ -163,12 +171,16 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Determine mode based on arguments
-BEADS_MODE=""
+MODE=""
 if [[ -n "$BEADS_ISSUE" ]]; then
-    BEADS_MODE="parent"
-elif [[ -z "$PROMPT_FILE" ]]; then
-    # No prompt and no beads issue - use auto-discovery mode
-    BEADS_MODE="auto"
+    MODE="beads-parent"
+elif [[ -n "$PRD_FILE" ]]; then
+    MODE="prd"
+elif [[ -n "$PLAN_FILE" ]]; then
+    MODE="plan"
+else
+    # No explicit mode - use beads auto-discovery
+    MODE="beads-auto"
 fi
 
 # Validate max iterations is a positive integer
@@ -203,9 +215,10 @@ if [[ -n "$WORKTREE" ]]; then
     fi
 fi
 
-# 2. Check config file for branchName
-if [[ -z "$WORK_DIR" ]] && [[ -f "$SCRIPT_DIR/$CONFIG_FILE" ]]; then
-    BRANCH_FROM_CONFIG=$(jq -r '.branchName // empty' "$SCRIPT_DIR/$CONFIG_FILE" 2>/dev/null || echo "")
+# 2. Check prd.json for branchName (use PRD_FILE if provided, else check for prd.json)
+PRD_CONFIG="${PRD_FILE:-$SCRIPT_DIR/prd.json}"
+if [[ -z "$WORK_DIR" ]] && [[ -f "$PRD_CONFIG" ]]; then
+    BRANCH_FROM_CONFIG=$(jq -r '.branchName // empty' "$PRD_CONFIG" 2>/dev/null || echo "")
     if [[ -n "$BRANCH_FROM_CONFIG" ]]; then
         # Security: Validate branchName from config (MEDIUM-1)
         if ! validate_path_component "$BRANCH_FROM_CONFIG" "branchName in config"; then
@@ -221,7 +234,7 @@ if [[ -z "$WORK_DIR" ]] && [[ -f "$SCRIPT_DIR/$CONFIG_FILE" ]]; then
 
         if [[ -d "$WORKTREE_PATH" ]]; then
             WORK_DIR="$WORKTREE_PATH"
-            echo "Using worktree from $CONFIG_FILE: $WORK_DIR"
+            echo "Using worktree from prd.json: $WORK_DIR"
         fi
     fi
 fi
@@ -235,18 +248,32 @@ fi
 # Change to working directory
 cd "$WORK_DIR"
 
-# Resolve prompt file path (if provided)
-if [[ -n "$PROMPT_FILE" ]]; then
-    if [[ ! "$PROMPT_FILE" = /* ]]; then
-        if [[ -f "$WORK_DIR/$PROMPT_FILE" ]]; then
-            PROMPT_FILE="$WORK_DIR/$PROMPT_FILE"
-        elif [[ -f "$SCRIPT_DIR/$PROMPT_FILE" ]]; then
-            PROMPT_FILE="$SCRIPT_DIR/$PROMPT_FILE"
+# Resolve plan file path (if provided)
+if [[ -n "$PLAN_FILE" ]]; then
+    if [[ ! "$PLAN_FILE" = /* ]]; then
+        if [[ -f "$WORK_DIR/$PLAN_FILE" ]]; then
+            PLAN_FILE="$WORK_DIR/$PLAN_FILE"
+        elif [[ -f "$SCRIPT_DIR/$PLAN_FILE" ]]; then
+            PLAN_FILE="$SCRIPT_DIR/$PLAN_FILE"
         fi
     fi
-    # Validate prompt file exists
-    if [[ ! -f "$PROMPT_FILE" ]]; then
-        echo "Error: Prompt file '$PROMPT_FILE' not found" >&2
+    if [[ ! -f "$PLAN_FILE" ]]; then
+        echo "Error: Plan file '$PLAN_FILE' not found" >&2
+        exit 2
+    fi
+fi
+
+# Resolve PRD file path (if provided)
+if [[ -n "$PRD_FILE" ]]; then
+    if [[ ! "$PRD_FILE" = /* ]]; then
+        if [[ -f "$WORK_DIR/$PRD_FILE" ]]; then
+            PRD_FILE="$WORK_DIR/$PRD_FILE"
+        elif [[ -f "$SCRIPT_DIR/$PRD_FILE" ]]; then
+            PRD_FILE="$SCRIPT_DIR/$PRD_FILE"
+        fi
+    fi
+    if [[ ! -f "$PRD_FILE" ]]; then
+        echo "Error: PRD file '$PRD_FILE' not found" >&2
         exit 2
     fi
 fi
@@ -284,57 +311,66 @@ build_prompt() {
     local prompt=""
     local nl=$'\n'
 
-    # 1. User's plan/prompt (if provided)
-    if [[ -n "$PROMPT_FILE" ]]; then
-        prompt+="$(cat "$PROMPT_FILE")"
-        prompt+="${nl}${nl}"
-    fi
-
-    # 2. Beads context (use bd CLI, not /beads skills - skills unavailable in -p mode)
-    if [[ "$BEADS_MODE" == "parent" ]]; then
-        prompt+="## Beads Workflow${nl}${nl}"
-        prompt+="Working on: $BEADS_ISSUE${nl}${nl}"
-        prompt+="1. Run \`bd list --status in_progress --parent $BEADS_ISSUE\` - finish in-progress tasks first${nl}"
-        prompt+="2. If none, run \`bd ready --parent $BEADS_ISSUE\` to find the next unblocked task${nl}"
-        prompt+="3. Run \`bd show <id>\` to see task details${nl}"
-        prompt+="4. Run \`bd update <id> --status in_progress\` when starting${nl}"
-        prompt+="5. Run \`bd close <id>\` when done${nl}${nl}"
-        prompt+="Work on ONE task only, then exit.${nl}${nl}"
-        prompt+="Only output the completion signal when ALL tasks under $BEADS_ISSUE are done.${nl}${nl}"
-    elif [[ "$BEADS_MODE" == "auto" ]]; then
-        prompt+="## Beads Workflow${nl}${nl}"
-        prompt+="1. Run \`bd list --status in_progress\` - finish in-progress tasks first${nl}"
-        prompt+="2. If none, run \`bd ready\` to find the next unblocked task${nl}"
-        prompt+="3. Run \`bd show <id>\` to see task details${nl}"
-        prompt+="4. Run \`bd update <id> --status in_progress\` when starting${nl}"
-        prompt+="5. Run \`bd close <id>\` when done${nl}${nl}"
-        prompt+="Work on ONE task only, then exit.${nl}${nl}"
-        prompt+="Only output the completion signal when ALL tasks are done.${nl}${nl}"
-    fi
-
-    # 3. Ralph instructions (custom file overwrites defaults)
+    # Mode-specific instructions (custom file overwrites defaults)
     if [[ -n "$RALPH_INSTRUCTIONS_FILE" ]]; then
         prompt+="$(cat "$RALPH_INSTRUCTIONS_FILE")"
         prompt+="${nl}"
-    else
-        prompt+="$RALPH_CORE_INSTRUCTIONS"
+    elif [[ "$MODE" == "beads-parent" ]]; then
+        prompt+="You are working on the tasks in beads issue $BEADS_ISSUE.${nl}${nl}"
+        prompt+="- Use \`bd show $BEADS_ISSUE\` to read full task context before starting${nl}"
+        prompt+="- Pick your task:${nl}"
+        prompt+="  - Check for any in-progress tasks using \`bd list --parent $BEADS_ISSUE --status in_progress\`${nl}"
+        prompt+="  - If there is an in-progress task, continue it.${nl}"
+        prompt+="  - If there are no tasks in progress, find one using: \`bd ready --parent $BEADS_ISSUE\`${nl}"
+        prompt+="  - Claim the task: \`bd update <id> --status in_progress\`${nl}"
+        prompt+="- Make atomic commits as you complete work${nl}"
+        prompt+="- Document your work, including key challenges and decisions with \`bd update <id> --notes \"...\"\`${nl}"
+        prompt+="- When you have completed the task, use \`bd close <id>\`${nl}${nl}"
+        prompt+="STOP work, do not progress with any other tasks.${nl}${nl}"
+        prompt+="## Completion${nl}${nl}"
+        prompt+="If there are no more tasks to work on (\`bd ready --parent $BEADS_ISSUE\` returns nothing), mark $BEADS_ISSUE as ready for review.${nl}"
+        prompt+="\`bd close $BEADS_ISSUE --reason \"Ready for review\"\`${nl}"
+        prompt+="\`bd pin $BEADS_ISSUE --for code-review\`${nl}${nl}"
+        prompt+="Only when ALL tasks are done (\`bd ready\` returns nothing), output \`<promise>COMPLETE</promise>\`.${nl}${nl}"
+    elif [[ "$MODE" == "beads-auto" ]]; then
+        prompt+="You are working on the beads issues.${nl}${nl}"
+        prompt+="- Use \`bd list --limit 0\` to read full task context before starting${nl}"
+        prompt+="- Pick your task:${nl}"
+        prompt+="  - Check for any in-progress tasks using \`bd list --status in_progress\`${nl}"
+        prompt+="  - If there is an in-progress task, continue it.${nl}"
+        prompt+="  - If there are no tasks in progress, find one using: \`bd ready\`${nl}"
+        prompt+="  - Claim the task: \`bd update <id> --status in_progress\`${nl}"
+        prompt+="- Make atomic commits as you complete work${nl}"
+        prompt+="- Document your work, including key challenges and decisions with \`bd update <id> --notes \"...\"\`${nl}"
+        prompt+="- When you have completed the task, use \`bd close <id>\`${nl}${nl}"
+        prompt+="STOP work, do not progress with any other tasks.${nl}${nl}"
+        prompt+="## Completion${nl}${nl}"
+        prompt+="Only when ALL tasks are done (\`bd ready\` returns nothing), output \`<promise>COMPLETE</promise>\`.${nl}${nl}"
+    elif [[ "$MODE" == "prd" ]]; then
+        local prd_instructions="${RALPH_PRD_INSTRUCTIONS//PRD_FILE_PATH/$PRD_FILE}"
+        prompt+="$prd_instructions"
+        prompt+="${nl}${nl}"
+    elif [[ "$MODE" == "plan" ]]; then
+        local plan_instructions="${RALPH_PLAN_INSTRUCTIONS//PLAN_FILE_PATH/$PLAN_FILE}"
+        prompt+="$plan_instructions"
         prompt+="${nl}${nl}"
     fi
 
     printf '%s\n' "$prompt"
 }
 
-# Initialize progress file
-PROGRESS_FILE="$WORK_DIR/progress.txt"
-if [[ ! -f "$PROGRESS_FILE" ]]; then
-    {
-        echo "# Ralph Progress Log"
-        echo "Started: $(date)"
-        echo "Branch: $(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo 'unknown')"
-        [[ "$BEADS_MODE" == "parent" ]] && echo "Beads Issue: $BEADS_ISSUE"
-        [[ "$BEADS_MODE" == "auto" ]] && echo "Beads Mode: auto-discovery"
-        echo "---"
-    } > "$PROGRESS_FILE"
+# Initialize progress file (plan/prd mode only - beads uses bd notes for tracking)
+PROGRESS_FILE=""
+if [[ "$MODE" == "plan" || "$MODE" == "prd" ]]; then
+    PROGRESS_FILE="$WORK_DIR/progress.txt"
+    if [[ ! -f "$PROGRESS_FILE" ]]; then
+        {
+            echo "# Ralph Progress Log"
+            echo "Started: $(date)"
+            echo "Branch: $(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo 'unknown')"
+            echo "---"
+        } > "$PROGRESS_FILE"
+    fi
 fi
 
 # Display startup banner
@@ -344,9 +380,10 @@ echo "  Ralph - Agentic Coding Loop"
 echo "═══════════════════════════════════════════════════════"
 echo "  Max iterations:    $MAX_ITERATIONS"
 echo "  Working dir:       $WORK_DIR"
-[[ -n "$PROMPT_FILE" ]] && echo "  Prompt file:       $PROMPT_FILE"
-[[ "$BEADS_MODE" == "parent" ]] && echo "  Beads mode:        parent ($BEADS_ISSUE)"
-[[ "$BEADS_MODE" == "auto" ]] && echo "  Beads mode:        auto-discovery"
+[[ "$MODE" == "plan" ]] && echo "  Mode:              plan ($PLAN_FILE)"
+[[ "$MODE" == "prd" ]] && echo "  Mode:              prd ($PRD_FILE)"
+[[ "$MODE" == "beads-parent" ]] && echo "  Mode:              beads-parent ($BEADS_ISSUE)"
+[[ "$MODE" == "beads-auto" ]] && echo "  Mode:              beads-auto"
 [[ -n "$RALPH_INSTRUCTIONS_FILE" ]] && echo "  Extra instructions: $RALPH_INSTRUCTIONS_FILE"
 [[ -n "$SETTINGS_RESOLVED" ]] && echo "  Settings file:     $SETTINGS_RESOLVED"
 echo "  Completion signal: $COMPLETION_SIGNAL"
@@ -363,14 +400,26 @@ while [[ $iteration -lt $MAX_ITERATIONS ]]; do
     echo "  Iteration $iteration of $MAX_ITERATIONS"
     echo "═══════════════════════════════════════════════════════"
 
-    # Log iteration start
-    {
-        echo ""
-        echo "### Iteration $iteration - $(date)"
-    } >> "$PROGRESS_FILE"
+    # Log iteration start (non-beads mode only)
+    if [[ -n "$PROGRESS_FILE" ]]; then
+        {
+            echo ""
+            echo "### Iteration $iteration - $(date)"
+        } >> "$PROGRESS_FILE"
+    fi
 
     # Build the combined prompt
     COMBINED_PROMPT=$(build_prompt)
+
+    # Show prompt in debug mode
+    if [[ "$DEBUG" == true ]]; then
+        echo "─────────────────────────────────────────────────────────"
+        echo "  Prompt"
+        echo "─────────────────────────────────────────────────────────"
+        echo "$COMBINED_PROMPT"
+        echo "─────────────────────────────────────────────────────────"
+        echo ""
+    fi
 
     # Build Claude command
     CLAUDE_ARGS=("--permission-mode" "acceptEdits" "-p" "$COMBINED_PROMPT")
@@ -408,25 +457,27 @@ while [[ $iteration -lt $MAX_ITERATIONS ]]; do
         output=$(claude "${CLAUDE_ARGS[@]}" 2>&1) || true
     fi
 
-    # Show beads progress after each iteration
-    if [[ -n "$BEADS_MODE" ]]; then
+    # Show beads progress after each iteration (beads modes only)
+    if [[ "$MODE" == "beads-parent" || "$MODE" == "beads-auto" ]]; then
         echo ""
         echo "─────────────────────────────────────────────────────────"
         echo "  Beads Status"
         echo "─────────────────────────────────────────────────────────"
-        if [[ "$BEADS_MODE" == "parent" ]]; then 
-            && bd list --pretty --parent $BEADS_ISSUE --limit 0 2>/dev/null || true
-        elif [[ "$BEADS_MODE" == "auto" ]]; then 
-            && bd list --pretty --limit 0 2>/dev/null || true
+        if [[ "$MODE" == "beads-parent" ]]; then
+            bd list --pretty --parent "$BEADS_ISSUE" --limit 0 2>/dev/null || true
+        else
+            bd list --pretty --limit 0 2>/dev/null || true
         fi
     fi
 
     # Check for completion signal
     if echo "$output" | grep -qF "$COMPLETION_SIGNAL"; then
-        {
-            echo ""
-            echo "### COMPLETED - $(date)"
-        } >> "$PROGRESS_FILE"
+        if [[ -n "$PROGRESS_FILE" ]]; then
+            {
+                echo ""
+                echo "### COMPLETED - $(date)"
+            } >> "$PROGRESS_FILE"
+        fi
 
         echo ""
         echo "═══════════════════════════════════════════════════════"
@@ -442,14 +493,20 @@ while [[ $iteration -lt $MAX_ITERATIONS ]]; do
 done
 
 # Max iterations reached
-{
-    echo ""
-    echo "### MAX ITERATIONS REACHED - $(date)"
-} >> "$PROGRESS_FILE"
+if [[ -n "$PROGRESS_FILE" ]]; then
+    {
+        echo ""
+        echo "### MAX ITERATIONS REACHED - $(date)"
+    } >> "$PROGRESS_FILE"
+fi
 
 echo ""
 echo "═══════════════════════════════════════════════════════"
 echo "  Ralph reached max iterations ($MAX_ITERATIONS)"
-echo "  Check $PROGRESS_FILE for status"
+if [[ -n "$PROGRESS_FILE" ]]; then
+    echo "  Check $PROGRESS_FILE for status"
+else
+    echo "  Check beads status with: bd list"
+fi
 echo "═══════════════════════════════════════════════════════"
 exit 1
