@@ -113,16 +113,17 @@ RALPH_PRD_INSTRUCTIONS='You are working through the PRD.
 
 - Read `@PRD_FILE_PATH` for the full project requirements
 - Read `progress.txt` to see what has been completed
-- Find the next incomplete task in the PRD where `passing:false`
+- Find the next item where `passes: false` (may be in `userStories`, `requirements`, or similar array)
+- Review the acceptance criteria, steps, or description to understand what needs to be done
 - Make atomic commits as you complete work
-- Log to `progress.txt`: task completed, key decisions, files changed
-- When the requirement is fulfilled, set `passing: true` for that requirement.
+- Log to `progress.txt`: item completed, key decisions, files changed
+- When done, set `passes: true` for that item in the PRD file
 
-STOP work, do not progress with any other tasks.
+STOP work, do not progress with any other items.
 
 ## Completion
 
-Only when ALL tasks in the PRD are done, output `<promise>COMPLETE</promise>`.'
+Only when ALL items pass (`passes: true`), output `<promise>COMPLETE</promise>`.'
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do

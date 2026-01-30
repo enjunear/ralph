@@ -132,7 +132,7 @@ STOP work, do not progress with any other tasks.
 Only when ALL tasks in the plan are done, output `<promise>COMPLETE</promise>`.
 ```
 
-For **beads modes**, instructions include `bd` commands for task discovery and status updates. For **PRD mode**, instructions track requirements with `passing: true/false`.
+For **beads modes**, instructions include `bd` commands for task discovery and status updates. For **PRD mode**, instructions find items with `passes: false`, complete the work, and set `passes: true`.
 
 You can overwrite these with `-r/--ralph-instructions` for project-specific rules.
 
@@ -140,20 +140,55 @@ You can overwrite these with `-r/--ralph-instructions` for project-specific rule
 
 ### prd.json (PRD Mode)
 
-When using `--prd`, Ralph works through requirements in a PRD file. Each requirement should have a `passing` field:
+When using `--prd`, Ralph works through requirements in a PRD file. The format is flexible - each item just needs a `passes` field to track completion.
+
+**Required:** Each item must have `passes: false` (Ralph sets to `true` when done)
+
+**Optional:** `branchName` at the root level auto-detects worktrees in `.worktree/<branchName>`
+
+#### Example: User Stories Format
 
 ```json
 {
-  "projectName": "my-project",
-  "branchName": "feature/epic-001",
-  "requirements": [
-    { "id": "REQ-001", "description": "User can log in", "passing": false },
-    { "id": "REQ-002", "description": "User can log out", "passing": false }
+  "project": "my-project",
+  "branchName": "feature/auth",
+  "description": "User authentication system",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "User can log in",
+      "description": "As a user, I need to log in to access my account.",
+      "acceptanceCriteria": [
+        "Login form accepts email and password",
+        "Successful login redirects to dashboard"
+      ],
+      "priority": 1,
+      "passes": false
+    }
   ]
 }
 ```
 
-The `branchName` field is also used to auto-detect worktrees in `.worktree/<branchName>`.
+#### Example: Functional Requirements Format
+
+```json
+{
+  "project": "chat-app",
+  "branchName": "feature/chat",
+  "requirements": [
+    {
+      "category": "functional",
+      "description": "New chat button creates a fresh conversation",
+      "steps": [
+        "Navigate to main interface",
+        "Click the 'New Chat' button",
+        "Verify a new conversation is created"
+      ],
+      "passes": false
+    }
+  ]
+}
+```
 
 ### Claude Settings (Optional)
 
@@ -223,20 +258,25 @@ ralph -b EPIC-001 -i 20
 ### Example 3: With PRD File
 
 ```bash
-# Create a PRD file with requirements
-cat > requirements.json << 'EOF'
+# Create a PRD file (format is flexible, just needs passes: false on each item)
+cat > prd.json << 'EOF'
 {
-  "projectName": "auth-feature",
-  "branchName": "feature/auth",
+  "project": "hello-world",
+  "branchName": "feature/hello",
   "requirements": [
-    { "id": "REQ-001", "description": "User can register with email", "passing": false },
-    { "id": "REQ-002", "description": "User can log in with credentials", "passing": false },
-    { "id": "REQ-003", "description": "User can reset password", "passing": false }
+    {
+      "description": "Create hello.sh that prints Hello World",
+      "passes": false
+    },
+    {
+      "description": "Create hello.py that prints Hello World",
+      "passes": false
+    }
   ]
 }
 EOF
 
-ralph --prd requirements.json -i 15
+ralph --prd prd.json -i 15
 ```
 
 ### Example 4: With Custom Instructions
