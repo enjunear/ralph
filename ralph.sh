@@ -93,37 +93,69 @@ validate_path_within_base() {
 
 # Core instructions for plan file mode
 # Note: PLAN_FILE_PATH is substituted in build_prompt
-RALPH_PLAN_INSTRUCTIONS='You are working through the plan.
+RALPH_PLAN_INSTRUCTIONS='You are working on ONE task from the plan.
 
-- Read `@PLAN_FILE_PATH` for the full plan
-- Read `progress.txt` to see what has been completed
-- Find the next incomplete task in the plan
-- Make atomic commits as you complete work
-- Log to `progress.txt`: task completed, key decisions, files changed
+## Pick ONE Task
 
-STOP work, do not progress with any other tasks.
+1. Read `@PLAN_FILE_PATH` for the full plan
+2. Read `progress.txt` to see what has been completed
+3. Find the next incomplete task in the plan
+4. If all tasks are complete, skip to Completion section below
+
+## Complete the Task
+
+Do the work for this ONE task only.
+
+## MANDATORY: Before Moving On
+
+You MUST do these steps IN ORDER after completing the task:
+
+1. **Commit your work**: `git add <files> && git commit -m "..."`
+2. **Log to progress.txt**: Append task completed, key decisions, files changed
+
+## STOP - Do Not Continue
+
+Do NOT look for or start another task. You are FINISHED. Exit.
 
 ## Completion
 
-Only when ALL tasks in the plan are done, output `<promise>COMPLETE</promise>`.'
+Only if ALL tasks in the plan are done (nothing left incomplete):
+
+Output: `<promise>COMPLETE</promise>`'
 
 # Core instructions for PRD file mode
 # Note: PRD_FILE_PATH is substituted in build_prompt
-RALPH_PRD_INSTRUCTIONS='You are working through the PRD.
+RALPH_PRD_INSTRUCTIONS='You are working on ONE item from the PRD.
 
-- Read `@PRD_FILE_PATH` for the full project requirements
-- Read `progress.txt` to see what has been completed
-- Find the next item where `passes: false` (may be in `userStories`, `requirements`, or similar array)
-- Review the acceptance criteria, steps, or description to understand what needs to be done
-- Make atomic commits as you complete work
-- Log to `progress.txt`: item completed, key decisions, files changed
-- When done, set `passes: true` for that item in the PRD file
+## Pick ONE Item
 
-STOP work, do not progress with any other items.
+1. Read `@PRD_FILE_PATH` for the full project requirements
+2. Read `progress.txt` to see what has been completed
+3. Find the next item where `passes: false` (may be in `userStories`, `requirements`, or similar array)
+4. If all items pass, skip to Completion section below
+5. Review the acceptance criteria, steps, or description to understand what needs to be done
+
+## Complete the Item
+
+Do the work for this ONE item only.
+
+## MANDATORY: Before Moving On
+
+You MUST do these steps IN ORDER after completing the item:
+
+1. **Commit your work**: `git add <files> && git commit -m "..."`
+2. **Log to progress.txt**: Append item completed, key decisions, files changed
+3. **Mark complete**: Set `passes: true` for that item in the PRD file
+
+## STOP - Do Not Continue
+
+Do NOT look for or start another item. You are FINISHED. Exit.
 
 ## Completion
 
-Only when ALL items pass (`passes: true`), output `<promise>COMPLETE</promise>`.'
+Only if ALL items pass (`passes: true` for every item):
+
+Output: `<promise>COMPLETE</promise>`'
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -317,36 +349,49 @@ build_prompt() {
         prompt+="$(cat "$RALPH_INSTRUCTIONS_FILE")"
         prompt+="${nl}"
     elif [[ "$MODE" == "beads-parent" ]]; then
-        prompt+="You are working on the tasks in beads issue $BEADS_ISSUE.${nl}${nl}"
-        prompt+="- Use \`bd show $BEADS_ISSUE\` to read full task context before starting${nl}"
-        prompt+="- Pick your task:${nl}"
-        prompt+="  - Check for any in-progress tasks using \`bd list --parent $BEADS_ISSUE --status in_progress\`${nl}"
-        prompt+="  - If there is an in-progress task, continue it.${nl}"
-        prompt+="  - If there are no tasks in progress, find one using: \`bd ready --parent $BEADS_ISSUE\`${nl}"
-        prompt+="  - Claim the task: \`bd update <id> --status in_progress\`${nl}"
-        prompt+="- Make atomic commits as you complete work${nl}"
-        prompt+="- Document your work, including key challenges and decisions with \`bd update <id> --notes \"...\"\`${nl}"
-        prompt+="- When you have completed the task, use \`bd close <id>\`${nl}${nl}"
-        prompt+="STOP work, do not progress with any other tasks.${nl}${nl}"
+        prompt+="You are working on ONE task from beads issue $BEADS_ISSUE.${nl}${nl}"
+        prompt+="## Pick ONE Task${nl}${nl}"
+        prompt+="1. Check for any in-progress tasks: \`bd list --parent $BEADS_ISSUE --status in_progress\`${nl}"
+        prompt+="2. If there is an in-progress task, continue it${nl}"
+        prompt+="3. If no tasks are in progress, find one: \`bd ready --parent $BEADS_ISSUE\`${nl}"
+        prompt+="4. If no tasks are ready, skip to Completion section below${nl}"
+        prompt+="5. Claim the task: \`bd update <id> --status in_progress\`${nl}"
+        prompt+="6. Use \`bd show <id>\` to read full task context${nl}${nl}"
+        prompt+="## Complete the Task${nl}${nl}"
+        prompt+="Do the work for this ONE task only.${nl}${nl}"
+        prompt+="## MANDATORY: Before Closing${nl}${nl}"
+        prompt+="You MUST do these steps IN ORDER before closing the task:${nl}${nl}"
+        prompt+="1. **Commit your work**: \`git add <files> && git commit -m \"...\"\`${nl}"
+        prompt+="2. **Document what you did**: \`bd update <id> --notes \"Brief summary of changes made, key decisions, any issues encountered\"\`${nl}"
+        prompt+="3. **Close the task**: \`bd close <id>\`${nl}${nl}"
+        prompt+="## STOP - Do Not Continue${nl}${nl}"
+        prompt+="Do NOT look for or start another task. You are FINISHED. Exit.${nl}${nl}"
         prompt+="## Completion${nl}${nl}"
-        prompt+="If there are no more tasks to work on (\`bd ready --parent $BEADS_ISSUE\` returns nothing), mark $BEADS_ISSUE as ready for review.${nl}"
-        prompt+="\`bd close $BEADS_ISSUE --reason \"Ready for review\"\`${nl}"
-        prompt+="\`bd pin $BEADS_ISSUE --for code-review\`${nl}${nl}"
-        prompt+="Only when ALL tasks are done (\`bd ready\` returns nothing), output \`<promise>COMPLETE</promise>\`.${nl}${nl}"
+        prompt+="Only if there are NO tasks to work on (\`bd ready --parent $BEADS_ISSUE\` returns nothing AND no tasks are in-progress):${nl}${nl}"
+        prompt+="1. Close the parent: \`bd close $BEADS_ISSUE --reason \"Ready for review\"\`${nl}"
+        prompt+="2. Pin for review: \`bd pin $BEADS_ISSUE --for code-review\`${nl}"
+        prompt+="3. Output: \`<promise>COMPLETE</promise>\`${nl}${nl}"
     elif [[ "$MODE" == "beads-auto" ]]; then
-        prompt+="You are working on the beads issues.${nl}${nl}"
-        prompt+="- Use \`bd list --limit 0\` to read full task context before starting${nl}"
-        prompt+="- Pick your task:${nl}"
-        prompt+="  - Check for any in-progress tasks using \`bd list --status in_progress\`${nl}"
-        prompt+="  - If there is an in-progress task, continue it.${nl}"
-        prompt+="  - If there are no tasks in progress, find one using: \`bd ready\`${nl}"
-        prompt+="  - Claim the task: \`bd update <id> --status in_progress\`${nl}"
-        prompt+="- Make atomic commits as you complete work${nl}"
-        prompt+="- Document your work, including key challenges and decisions with \`bd update <id> --notes \"...\"\`${nl}"
-        prompt+="- When you have completed the task, use \`bd close <id>\`${nl}${nl}"
-        prompt+="STOP work, do not progress with any other tasks.${nl}${nl}"
+        prompt+="You are working on ONE beads task.${nl}${nl}"
+        prompt+="## Pick ONE Task${nl}${nl}"
+        prompt+="1. Check for any in-progress tasks: \`bd list --status in_progress\`${nl}"
+        prompt+="2. If there is an in-progress task, continue it${nl}"
+        prompt+="3. If no tasks are in progress, find one: \`bd ready\`${nl}"
+        prompt+="4. If no tasks are ready, skip to Completion section below${nl}"
+        prompt+="5. Claim the task: \`bd update <id> --status in_progress\`${nl}"
+        prompt+="6. Use \`bd show <id>\` to read full task context${nl}${nl}"
+        prompt+="## Complete the Task${nl}${nl}"
+        prompt+="Do the work for this ONE task only.${nl}${nl}"
+        prompt+="## MANDATORY: Before Closing${nl}${nl}"
+        prompt+="You MUST do these steps IN ORDER before closing the task:${nl}${nl}"
+        prompt+="1. **Commit your work**: \`git add <files> && git commit -m \"...\"\`${nl}"
+        prompt+="2. **Document what you did**: \`bd update <id> --notes \"Brief summary of changes made, key decisions, any issues encountered\"\`${nl}"
+        prompt+="3. **Close the task**: \`bd close <id>\`${nl}${nl}"
+        prompt+="## STOP - Do Not Continue${nl}${nl}"
+        prompt+="Do NOT look for or start another task. You are FINISHED. Exit.${nl}${nl}"
         prompt+="## Completion${nl}${nl}"
-        prompt+="Only when ALL tasks are done (\`bd ready\` returns nothing), output \`<promise>COMPLETE</promise>\`.${nl}${nl}"
+        prompt+="Only if there are NO tasks to work on (\`bd ready\` returns nothing AND no tasks are in-progress):${nl}${nl}"
+        prompt+="Output: \`<promise>COMPLETE</promise>\`${nl}${nl}"
     elif [[ "$MODE" == "prd" ]]; then
         local prd_instructions="${RALPH_PRD_INSTRUCTIONS//PRD_FILE_PATH/$PRD_FILE}"
         prompt+="$prd_instructions"
