@@ -52,6 +52,14 @@ Use a plan file instead of beads:
 ralph -p plan.md
 ```
 
+### With PRD File
+
+Work through requirements in a PRD JSON file:
+
+```bash
+ralph --prd requirements.json
+```
+
 ## Usage
 
 ```
@@ -59,12 +67,13 @@ ralph [OPTIONS]
 
 Options:
   -b, --beads ISSUE_ID        Work children of this epic/parent issue
-  -p, --prompt FILE           Plan/prompt file (alternative to beads)
+  -p, --plan FILE             Plan file to work through
+  --prd FILE                  PRD JSON file with requirements
   -r, --ralph-instructions    Custom instructions file (overwrites defaults)
   -i, --max-iterations N      Maximum iterations (default: 10)
   -w, --worktree NAME         Git worktree to run in (.worktree/<name>)
   -s, --settings FILE         Claude settings JSON for permissions (optional)
-  -c, --config FILE           Config file with project info (default: prd.json)
+  -d, --debug                 Show Claude output in real-time, save logs to .ralph-logs/
   -h, --help                  Show help message
 ```
 
@@ -72,12 +81,23 @@ Options:
 
 ### The Loop
 
-1. Ralph builds a prompt (beads workflow or plan file)
-2. Injects core instructions (read progress.txt, work one task, signal completion)
+1. Ralph determines mode based on arguments (beads-auto, beads-parent, plan, or prd)
+2. Builds mode-specific instructions
 3. Runs Claude with the combined prompt
 4. Checks output for `<promise>COMPLETE</promise>`
 5. If not complete, loops back to step 3
 6. Exits on completion or max iterations
+
+### Modes
+
+Ralph supports four modes:
+
+| Mode | Triggered By | Description |
+|------|--------------|-------------|
+| **beads-auto** | No arguments | Auto-discovers tasks via `bd ready` |
+| **beads-parent** | `-b ISSUE_ID` | Works children of a specific epic/parent |
+| **plan** | `-p FILE` | Works through tasks in a plan file |
+| **prd** | `--prd FILE` | Works through requirements in a PRD JSON file |
 
 ### Beads Workflow
 
@@ -86,50 +106,87 @@ Each iteration, Claude:
 1. **Checks for in-progress tasks** - `bd list --status in_progress` - finish what was started
 2. **Finds next ready task** - `bd ready` to pick unblocked work
 3. **Works the task** - `bd update <id> --status in_progress`, makes commits
-4. **Closes when done** - `bd close <id>` to mark complete
-5. **Exits** - One task per iteration
+4. **Documents progress** - `bd update <id> --notes "..."` for key decisions
+5. **Closes when done** - `bd close <id>` to mark complete
+6. **Stops** - One task per iteration
 
 This enables **autonomous multi-session work** - Ralph can work through an entire epic without human intervention.
 
 ### Injected Instructions
 
-Ralph automatically injects these core instructions into every prompt:
+Ralph injects mode-specific instructions. Here's an example for **plan mode**:
 
 ```markdown
-## Instructions
+You are working through the plan.
 
-**FIRST: Read progress.txt** to see what has been completed. Skip exploration for completed work.
+- Read `@plan.md` for the full plan
+- Read `progress.txt` to see what has been completed
+- Find the next incomplete task in the plan
+- Make atomic commits as you complete work
+- Log to `progress.txt`: task completed, key decisions, files changed
 
-1. **Focus on ONE task at a time** - Complete the current task fully, then exit
-2. **Use beads for tracking** - If using beads, update status with `bd` commands as you progress
-3. **Signal completion correctly** - Output <promise>COMPLETE</promise> ONLY when ALL tasks are finished
-4. **Handle blockers gracefully** - If blocked, document why and exit without signaling completion
-5. **Commit frequently** - Make atomic commits as you complete logical units of work
-6. **Stay focused** - Do not refactor unrelated code or add unrequested features
+STOP work, do not progress with any other tasks.
 
-After completing each task, append to progress.txt:
-- Task completed (with issue ID if using beads)
-- Key decisions made
-- Files changed
-- Blockers or notes for next iteration
+## Completion
 
-When ALL tasks are done, output: <promise>COMPLETE</promise>
+Only when ALL tasks in the plan are done, output `<promise>COMPLETE</promise>`.
 ```
+
+For **beads modes**, instructions include `bd` commands for task discovery and status updates. For **PRD mode**, instructions find items with `passes: false`, complete the work, and set `passes: true`.
 
 You can overwrite these with `-r/--ralph-instructions` for project-specific rules.
 
 ## Configuration
 
-### prd.json
+### prd.json (PRD Mode)
 
-Ralph can read project configuration from `prd.json`:
+When using `--prd`, Ralph works through requirements in a PRD file. The format is flexible - each item just needs a `passes` field to track completion.
+
+**Required:** Each item must have `passes: false` (Ralph sets to `true` when done)
+
+**Optional:** `branchName` at the root level auto-detects worktrees in `.worktree/<branchName>`
+
+#### Example: User Stories Format
 
 ```json
 {
-  "projectName": "my-project",
-  "branchName": "feature/epic-001",
-  "description": "Implement user authentication",
-  "beadsEpic": "EPIC-001"
+  "project": "my-project",
+  "branchName": "feature/auth",
+  "description": "User authentication system",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "User can log in",
+      "description": "As a user, I need to log in to access my account.",
+      "acceptanceCriteria": [
+        "Login form accepts email and password",
+        "Successful login redirects to dashboard"
+      ],
+      "priority": 1,
+      "passes": false
+    }
+  ]
+}
+```
+
+#### Example: Functional Requirements Format
+
+```json
+{
+  "project": "chat-app",
+  "branchName": "feature/chat",
+  "requirements": [
+    {
+      "category": "functional",
+      "description": "New chat button creates a fresh conversation",
+      "steps": [
+        "Navigate to main interface",
+        "Click the 'New Chat' button",
+        "Verify a new conversation is created"
+      ],
+      "passes": false
+    }
+  ]
 }
 ```
 
@@ -137,7 +194,7 @@ Ralph can read project configuration from `prd.json`:
 
 Ralph can use Claude's settings file for permissions. Default location: `.claude/settings.local.json`
 
-If not provided, Claude runs with default permissions (interactive approval).
+If not provided, Claude runs with `--permission-mode acceptEdits`.
 
 ```json
 {
@@ -198,7 +255,31 @@ bd create --title "Update all components for theming" --parent EPIC-001 --blocke
 ralph -b EPIC-001 -i 20
 ```
 
-### Example 3: With Custom Instructions
+### Example 3: With PRD File
+
+```bash
+# Create a PRD file (format is flexible, just needs passes: false on each item)
+cat > prd.json << 'EOF'
+{
+  "project": "hello-world",
+  "branchName": "feature/hello",
+  "requirements": [
+    {
+      "description": "Create hello.sh that prints Hello World",
+      "passes": false
+    },
+    {
+      "description": "Create hello.py that prints Hello World",
+      "passes": false
+    }
+  ]
+}
+EOF
+
+ralph --prd prd.json -i 15
+```
+
+### Example 4: With Custom Instructions
 
 ```bash
 # Create ralph instructions for your project
@@ -214,20 +295,29 @@ EOF
 ralph -p plan.md -r .ralph-instructions.md
 ```
 
+### Example 5: Debug Mode
+
+```bash
+# Watch Claude work in real-time
+ralph -b EPIC-001 -d
+
+# Logs saved to .ralph-logs/ for later review
+```
+
 ## Progress Tracking
 
 ### With Beads
 
-Ralph updates beads issues automatically:
+In beads modes, Claude tracks progress directly in beads:
 
 - Sets status to `in_progress` when starting a task
-- Adds comments showing work progress
-- Sets status to `completed` when task is done
+- Documents work with `bd update <id> --notes "..."`
+- Sets status to `completed` when task is done via `bd close`
 - Moves to next ready task
 
-### With prd.json
+### With Plan/PRD Files
 
-Ralph updates `progress.txt` with iteration logs:
+In plan and PRD modes, Ralph creates and updates `progress.txt`:
 
 ```txt
 # Ralph Progress Log
@@ -243,6 +333,19 @@ Status: Completed
 Working on: Create theme toggle component
 Status: In progress...
 ```
+
+## Debug Mode
+
+Use `-d/--debug` to see Claude's output in real-time:
+
+```bash
+ralph -p plan.md -d
+```
+
+Debug mode:
+- Streams Claude's responses as they happen
+- Saves full JSON logs to `.ralph-logs/` directory
+- Logs are named by session ID or iteration number
 
 ## Completion Signal
 
