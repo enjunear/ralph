@@ -4,7 +4,7 @@
 #
 # Usage: ralph [OPTIONS]
 #   -p, --plan FILE             Plan/prompt file (content prepended to instructions)
-#   --prd FILE                  PRD JSON file (default: prd.json if exists)
+#   --prd FILE                  PRD JSON file with requirements
 #   -b, --beads ISSUE_ID        Beads epic or parent issue to work through
 #   -r, --ralph-instructions    Custom instructions file (overwrites defaults)
 #   -i, --max-iterations N      Maximum number of iterations (default: 10)
@@ -32,7 +32,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MAX_ITERATIONS=10
 WORKTREE=""
 PLAN_FILE=""
-PRD_FILE="prd.json"
+PRD_FILE=""
 RALPH_INSTRUCTIONS_FILE=""
 BEADS_ISSUE=""
 SETTINGS_FILE=".claude/settings.local.json"

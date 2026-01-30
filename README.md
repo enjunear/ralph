@@ -68,7 +68,7 @@ ralph [OPTIONS]
 Options:
   -b, --beads ISSUE_ID        Work children of this epic/parent issue
   -p, --plan FILE             Plan file to work through
-  --prd FILE                  PRD JSON file with requirements (default: prd.json if exists)
+  --prd FILE                  PRD JSON file with requirements
   -r, --ralph-instructions    Custom instructions file (overwrites defaults)
   -i, --max-iterations N      Maximum iterations (default: 10)
   -w, --worktree NAME         Git worktree to run in (.worktree/<name>)
