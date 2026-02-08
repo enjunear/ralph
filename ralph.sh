@@ -13,6 +13,7 @@
 #   -d, --debug                 Show Claude output in real-time
 #   -h, --help                  Show this help message
 #
+# Exit codes: 0=complete, 1=max iterations, 2=config error, 3=usage/rate limit
 # Completion: Exits when output contains <promise>COMPLETE</promise>
 #
 # Examples:
@@ -38,6 +39,33 @@ BEADS_ISSUE=""
 SETTINGS_FILE=".claude/settings.local.json"
 COMPLETION_SIGNAL="<promise>COMPLETE</promise>"
 DEBUG=false
+
+# Detect usage/rate limit errors in Claude CLI output
+# Prints error description to stdout and returns 0 if a limit error is detected
+# Returns 1 if no error found
+detect_limit_error() {
+    local output="$1"
+
+    # Subscription usage limit (fatal - wait hours for reset)
+    if echo "$output" | grep -qi "usage limit reached"; then
+        echo "$output" | grep -i "usage limit reached" | head -1 | sed 's/^[[:space:]]*//'
+        return 0
+    fi
+
+    # API rate limit error (429)
+    if echo "$output" | grep -q "rate_limit_error"; then
+        echo "API rate limit error (HTTP 429)"
+        return 0
+    fi
+
+    # API overloaded after CLI retries exhausted (529)
+    if echo "$output" | grep -q "overloaded_error"; then
+        echo "API overloaded (HTTP 529)"
+        return 0
+    fi
+
+    return 1
+}
 
 # Security: Validate path doesn't contain traversal sequences
 # Returns 0 if safe, 1 if unsafe
@@ -501,6 +529,25 @@ while [[ $iteration -lt $MAX_ITERATIONS ]]; do
         fi
     else
         output=$(claude "${CLAUDE_ARGS[@]}" 2>&1) || true
+    fi
+
+    # Check for usage/rate limit errors before continuing
+    limit_msg=""
+    if limit_msg=$(detect_limit_error "$output"); then
+        if [[ -n "$PROGRESS_FILE" ]]; then
+            {
+                echo ""
+                echo "### STOPPED (limit error) - $(date)"
+                echo "$limit_msg"
+            } >> "$PROGRESS_FILE"
+        fi
+
+        echo ""
+        echo "═══════════════════════════════════════════════════════"
+        echo "  Ralph stopped: $limit_msg"
+        echo "  Occurred during iteration $iteration of $MAX_ITERATIONS"
+        echo "═══════════════════════════════════════════════════════"
+        exit 3
     fi
 
     # Show beads progress after each iteration (beads modes only)
