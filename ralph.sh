@@ -10,6 +10,8 @@
 #   -i, --max-iterations N      Maximum number of iterations (default: 10)
 #   -w, --worktree NAME         Git worktree to run in (.worktree/<name>)
 #   -s, --settings FILE         Path to Claude settings JSON file
+#   --glab                      Use GitLab issues via glab CLI
+#   --gh                        Use GitHub issues via gh CLI
 #   -d, --debug                 Show Claude output in real-time
 #   -h, --help                  Show this help message
 #
@@ -21,6 +23,8 @@
 #   ralph -b EPIC-001         # work children of EPIC-001
 #   ralph -p plan.md          # work from a plan file
 #   ralph --prd prd.json      # work from a PRD file
+#   ralph --glab              # work from GitLab issues
+#   ralph --gh                # work from GitHub issues
 #   ralph -b EPIC-001 -i 20   # with iteration limit
 #
 
@@ -36,6 +40,7 @@ PLAN_FILE=""
 PRD_FILE=""
 RALPH_INSTRUCTIONS_FILE=""
 BEADS_ISSUE=""
+ISSUES_CLI=""
 SETTINGS_FILE=".claude/settings.local.json"
 COMPLETION_SIGNAL="<promise>COMPLETE</promise>"
 DEBUG=false
@@ -212,6 +217,14 @@ while [[ $# -gt 0 ]]; do
             WORKTREE="$2"
             shift 2
             ;;
+        --glab)
+            [[ -z "$ISSUES_CLI" ]] && ISSUES_CLI=glab
+            shift
+            ;;
+        --gh)
+            [[ -z "$ISSUES_CLI" ]] && ISSUES_CLI=gh
+            shift
+            ;;
         -s|--settings)
             SETTINGS_FILE="$2"
             shift 2
@@ -235,6 +248,8 @@ done
 MODE=""
 if [[ -n "$BEADS_ISSUE" ]]; then
     MODE="beads-parent"
+elif [[ -n "$ISSUES_CLI" ]]; then
+    MODE="issues"
 elif [[ -n "$PRD_FILE" ]]; then
     MODE="prd"
 elif [[ -n "$PLAN_FILE" ]]; then
@@ -387,6 +402,7 @@ build_prompt() {
         prompt+="6. Use \`bd show <id>\` to read full task context${nl}${nl}"
         prompt+="## Complete the Task${nl}${nl}"
         prompt+="Do the work for this ONE task only.${nl}${nl}"
+        prompt+="**Tip**: If a \`bd\` command fails or you are unsure of the syntax, run \`bd --help\` or \`bd <command> --help\` to discover available commands and flags.${nl}${nl}"
         prompt+="## MANDATORY: Before Closing${nl}${nl}"
         prompt+="You MUST do these steps IN ORDER before closing the task:${nl}${nl}"
         prompt+="1. **Commit your work**: \`git add <files> && git commit -m \"...\"\`${nl}"
@@ -410,6 +426,7 @@ build_prompt() {
         prompt+="6. Use \`bd show <id>\` to read full task context${nl}${nl}"
         prompt+="## Complete the Task${nl}${nl}"
         prompt+="Do the work for this ONE task only.${nl}${nl}"
+        prompt+="**Tip**: If a \`bd\` command fails or you are unsure of the syntax, run \`bd --help\` or \`bd <command> --help\` to discover available commands and flags.${nl}${nl}"
         prompt+="## MANDATORY: Before Closing${nl}${nl}"
         prompt+="You MUST do these steps IN ORDER before closing the task:${nl}${nl}"
         prompt+="1. **Commit your work**: \`git add <files> && git commit -m \"...\"\`${nl}"
@@ -419,6 +436,30 @@ build_prompt() {
         prompt+="Do NOT look for or start another task. You are FINISHED. Exit.${nl}${nl}"
         prompt+="## Completion${nl}${nl}"
         prompt+="Only if there are NO tasks to work on (\`bd ready\` returns nothing AND no tasks are in-progress):${nl}${nl}"
+        prompt+="Output: \`<promise>COMPLETE</promise>\`${nl}${nl}"
+    elif [[ "$MODE" == "issues" ]]; then
+        local cli="$ISSUES_CLI"
+        prompt+="You are working on ONE issue.${nl}${nl}"
+        prompt+="## Pick ONE Task${nl}${nl}"
+        prompt+="1. Check for assigned issues: \`$cli issue list --assignee=@me --output json\`${nl}"
+        prompt+="2. If there is an assigned issue, continue it${nl}"
+        prompt+="3. If no issues are assigned, find one: \`$cli issue list --output json\`${nl}"
+        prompt+="4. If no issues are open, skip to Completion section below${nl}"
+        prompt+="5. Use the \`iid\` field (NOT \`id\`) from the JSON as the issue number${nl}"
+        prompt+="6. Assign yourself: \`$cli issue update <iid> --assignee @me\`${nl}"
+        prompt+="7. Use \`$cli issue view <iid>\` to read full issue context${nl}${nl}"
+        prompt+="## Complete the Task${nl}${nl}"
+        prompt+="Do the work for this ONE issue only.${nl}${nl}"
+        prompt+="**Tip**: If a \`$cli\` command fails or you are unsure of the syntax, run \`$cli issue --help\` or \`$cli --help\` to discover available commands and flags.${nl}${nl}"
+        prompt+="## MANDATORY: Before Closing${nl}${nl}"
+        prompt+="You MUST do these steps IN ORDER before closing the issue:${nl}${nl}"
+        prompt+="1. **Commit your work**: \`git add <files> && git commit -m \"... Closes #<iid>\"\`${nl}"
+        prompt+="   - The commit message MUST include \`Closes #<iid>\` to auto-close the issue${nl}"
+        prompt+="2. **Push your work**: \`git push\`${nl}${nl}"
+        prompt+="## STOP - Do Not Continue${nl}${nl}"
+        prompt+="Do NOT look for or start another issue. You are FINISHED. Exit.${nl}${nl}"
+        prompt+="## Completion${nl}${nl}"
+        prompt+="Only if there are NO issues to work on (\`$cli issue list --output json\` returns an empty array):${nl}${nl}"
         prompt+="Output: \`<promise>COMPLETE</promise>\`${nl}${nl}"
     elif [[ "$MODE" == "prd" ]]; then
         local prd_instructions="${RALPH_PRD_INSTRUCTIONS//PRD_FILE_PATH/$PRD_FILE}"
@@ -458,6 +499,7 @@ echo "  Working dir:       $WORK_DIR"
 [[ "$MODE" == "prd" ]] && echo "  Mode:              prd ($PRD_FILE)"
 [[ "$MODE" == "beads-parent" ]] && echo "  Mode:              beads-parent ($BEADS_ISSUE)"
 [[ "$MODE" == "beads-auto" ]] && echo "  Mode:              beads-auto"
+[[ "$MODE" == "issues" ]] && echo "  Mode:              $ISSUES_CLI issues"
 [[ -n "$RALPH_INSTRUCTIONS_FILE" ]] && echo "  Extra instructions: $RALPH_INSTRUCTIONS_FILE"
 [[ -n "$SETTINGS_RESOLVED" ]] && echo "  Settings file:     $SETTINGS_RESOLVED"
 echo "  Completion signal: $COMPLETION_SIGNAL"
@@ -561,6 +603,12 @@ while [[ $iteration -lt $MAX_ITERATIONS ]]; do
         else
             bd list --pretty --limit 0 2>/dev/null || true
         fi
+    elif [[ "$MODE" == "issues" ]]; then
+        echo ""
+        echo "─────────────────────────────────────────────────────────"
+        echo "  Issues"
+        echo "─────────────────────────────────────────────────────────"
+        $ISSUES_CLI issue list 2>/dev/null || true
     fi
 
     # Check for completion signal
