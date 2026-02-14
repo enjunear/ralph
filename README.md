@@ -19,7 +19,7 @@ Based on Geoffrey Huntley's [Ralph](https://ghuntley.com/ralph/) pattern.
 git clone https://github.com/enjunear/ralph.git
 cd ralph
 chmod +x ralph.sh
-ln -s "$(pwd)/ralph.sh" /usr/local/bin/ralph
+ln -s "$(pwd)/ralph.sh" ~/.local/bin/ralph
 ```
 
 ## Quick Start
@@ -69,6 +69,8 @@ Options:
   -b, --beads ISSUE_ID        Work children of this epic/parent issue
   -p, --plan FILE             Plan file to work through
   --prd FILE                  PRD JSON file with requirements
+  --glab                      Use GitLab issues via glab CLI
+  --gh                        Use GitHub issues via gh CLI
   -r, --ralph-instructions    Custom instructions file (overwrites defaults)
   -i, --max-iterations N      Maximum iterations (default: 10)
   -w, --worktree NAME         Git worktree to run in (.worktree/<name>)
@@ -81,7 +83,7 @@ Options:
 
 ### The Loop
 
-1. Ralph determines mode based on arguments (beads-auto, beads-parent, plan, or prd)
+1. Ralph determines mode based on arguments (beads-auto, beads-parent, glab, gh, plan, or prd)
 2. Builds mode-specific instructions
 3. Runs Claude with the combined prompt
 4. Checks output for `<promise>COMPLETE</promise>`
@@ -90,12 +92,14 @@ Options:
 
 ### Modes
 
-Ralph supports four modes:
+Ralph supports six modes:
 
 | Mode | Triggered By | Description |
 |------|--------------|-------------|
 | **beads-auto** | No arguments | Auto-discovers tasks via `bd ready` |
 | **beads-parent** | `-b ISSUE_ID` | Works children of a specific epic/parent |
+| **glab** | `--glab` | Works through GitLab issues via `glab` CLI |
+| **gh** | `--gh` | Works through GitHub issues via `gh` CLI |
 | **plan** | `-p FILE` | Works through tasks in a plan file |
 | **prd** | `--prd FILE` | Works through requirements in a PRD JSON file |
 
