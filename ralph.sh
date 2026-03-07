@@ -51,6 +51,7 @@ DRAFT_MR_TITLE=""
 DRAFT_MR_BRANCH=""
 DRAFT_MR_DESC=""
 ELIGIBLE_ISSUES=""
+ISSUES_SOURCE=""  # "assigned" or "unassigned"
 ISSUES_HAS_WORK=false
 
 # Detect usage/rate limit errors in Claude CLI output
@@ -166,21 +167,39 @@ discover_draft_mr() {
     return 0
 }
 
-# Find issues assigned to the current user that don't already have MRs/PRs
+# Find issues that don't already have MRs/PRs
+# Args: $1=cli (glab|gh), $2=mode ("me" for assigned to me, "unassigned" for no assignee)
 # Sets ELIGIBLE_ISSUES global (JSON array) on success, returns 1 if none found
 discover_eligible_issues() {
     local cli="$1"
+    local mode="${2:-me}"
     local json_output
 
     if [[ "$cli" == "glab" ]]; then
-        json_output=$($cli issue list --assignee @me --output json 2>/dev/null) || return 1
+        if [[ "$mode" == "me" ]]; then
+            json_output=$($cli issue list --assignee @me --output json 2>/dev/null) || return 1
+        else
+            # glab has no "unassigned" filter; fetch all and filter client-side
+            json_output=$($cli issue list --output json 2>/dev/null) || return 1
+        fi
     else
-        json_output=$($cli issue list --assignee @me --json number,title,body,labels 2>/dev/null) || return 1
+        if [[ "$mode" == "me" ]]; then
+            json_output=$($cli issue list --assignee @me --json number,title,body,labels 2>/dev/null) || return 1
+        else
+            json_output=$($cli issue list --search "no:assignee" --json number,title,body,labels 2>/dev/null) || return 1
+        fi
     fi
 
     local count
     count=$(echo "$json_output" | jq 'length' 2>/dev/null) || return 1
     [[ "$count" == "0" || -z "$count" ]] && return 1
+
+    # glab: filter to unassigned issues client-side (gh handles this via --search)
+    if [[ "$mode" == "unassigned" && "$cli" == "glab" ]]; then
+        json_output=$(echo "$json_output" | jq '[.[] | select(.assignees | length == 0)]')
+        count=$(echo "$json_output" | jq 'length' 2>/dev/null) || return 1
+        [[ "$count" == "0" || -z "$count" ]] && return 1
+    fi
 
     if [[ "$cli" == "glab" ]]; then
         # glab provides merge_requests_count — filter to issues with no MR
@@ -217,7 +236,7 @@ discover_eligible_issues() {
     return 0
 }
 
-# Orchestrate task discovery: check draft MRs first, then eligible issues
+# Orchestrate task discovery: draft MRs → my issues → unassigned issues
 # Sets ISSUES_HAS_WORK=true if work found
 discover_issues_work() {
     local cli="$1"
@@ -227,6 +246,7 @@ discover_issues_work() {
     DRAFT_MR_BRANCH=""
     DRAFT_MR_DESC=""
     ELIGIBLE_ISSUES=""
+    ISSUES_SOURCE=""
 
     echo "  Discovering work via $cli..."
 
@@ -237,12 +257,23 @@ discover_issues_work() {
         return
     fi
 
-    # Step 2: Check for eligible issues (new work)
-    if discover_eligible_issues "$cli"; then
+    # Step 2: Check for issues assigned to me (no MR yet)
+    if discover_eligible_issues "$cli" "me"; then
         ISSUES_HAS_WORK=true
+        ISSUES_SOURCE="assigned"
         local count
         count=$(echo "$ELIGIBLE_ISSUES" | jq 'length')
-        echo "  Found $count eligible issue(s)"
+        echo "  Found $count issue(s) assigned to me"
+        return
+    fi
+
+    # Step 3: Check for unassigned issues (no MR yet)
+    if discover_eligible_issues "$cli" "unassigned"; then
+        ISSUES_HAS_WORK=true
+        ISSUES_SOURCE="unassigned"
+        local count
+        count=$(echo "$ELIGIBLE_ISSUES" | jq 'length')
+        echo "  Found $count unassigned issue(s)"
         return
     fi
 
@@ -599,13 +630,17 @@ build_prompt() {
             local issue_view mr_create_hint
             if [[ "$cli" == "glab" ]]; then
                 issue_view="glab issue view"
-                mr_create_hint="glab mr create --related-issue <iid> --copy-issue-labels --create-source-branch --draft --no-editor --remove-source-branch --squash-before-merge"
+                mr_create_hint="glab mr create --related-issue <iid> --assignee @me --copy-issue-labels --create-source-branch --draft --no-editor --remove-source-branch --squash-before-merge"
             else
                 issue_view="gh issue view"
-                mr_create_hint="Create a branch (git checkout -b feature/<iid>-<short-description>), then after committing: gh pr create --draft --title \"<title>\" --body \"Closes #<iid>\""
+                mr_create_hint="Create a branch (git checkout -b feature/<iid>-<short-description>), then after committing: gh pr create --draft --assignee @me --title \"<title>\" --body \"Closes #<iid>\""
             fi
 
-            prompt+="The following issues are assigned to you:${nl}${nl}"
+            if [[ "$ISSUES_SOURCE" == "unassigned" ]]; then
+                prompt+="The following unassigned issues are available:${nl}${nl}"
+            else
+                prompt+="The following issues are assigned to you:${nl}${nl}"
+            fi
             local i=0
             local count
             count=$(echo "$ELIGIBLE_ISSUES" | jq 'length')
@@ -625,8 +660,20 @@ build_prompt() {
             prompt+="${nl}## Implementation${nl}${nl}"
             prompt+="1. Pick the most suitable issue from the list above${nl}"
             prompt+="2. Read full context: \`$issue_view <iid> --comments\`${nl}"
-            prompt+="3. Create a draft MR: \`$mr_create_hint\`${nl}"
-            prompt+="4. Implement your solution. Make atomic commits.${nl}${nl}"
+            local step=3
+            if [[ "$ISSUES_SOURCE" == "unassigned" ]]; then
+                local assign_hint
+                if [[ "$cli" == "glab" ]]; then
+                    assign_hint="glab issue update <iid> --assignee @me"
+                else
+                    assign_hint="gh issue edit <iid> --add-assignee @me"
+                fi
+                prompt+="$step. Assign the issue to yourself: \`$assign_hint\`${nl}"
+                step=$((step + 1))
+            fi
+            prompt+="$step. Create a draft MR: \`$mr_create_hint\`${nl}"
+            step=$((step + 1))
+            prompt+="$step. Implement your solution. Make atomic commits.${nl}${nl}"
 
             prompt+="## Close-out${nl}${nl}"
             prompt+="1. Ensure all checks and tests pass${nl}"
