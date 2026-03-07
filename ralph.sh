@@ -45,6 +45,14 @@ SETTINGS_FILE=".claude/settings.local.json"
 COMPLETION_SIGNAL="<promise>COMPLETE</promise>"
 DEBUG=false
 
+# Discovery state (issues mode)
+DRAFT_MR_IID=""
+DRAFT_MR_TITLE=""
+DRAFT_MR_BRANCH=""
+DRAFT_MR_DESC=""
+ELIGIBLE_ISSUES=""
+ISSUES_HAS_WORK=false
+
 # Detect usage/rate limit errors in Claude CLI output
 # Prints error description to stdout and returns 0 if a limit error is detected
 # Returns 1 if no error found
@@ -122,6 +130,123 @@ validate_path_within_base() {
     fi
 
     return 0
+}
+
+# Deterministic task discovery for issues mode (glab/gh)
+# Runs CLI commands to find work BEFORE invoking Claude, so if there's
+# nothing to do, Claude is never called (saves tokens, deterministic).
+
+# Find draft MRs/PRs assigned to the current user
+# Sets DRAFT_MR_* globals on success, returns 1 if none found
+discover_draft_mr() {
+    local cli="$1"
+    local json_output
+
+    if [[ "$cli" == "glab" ]]; then
+        json_output=$($cli mr list --assignee @me --draft --output json 2>/dev/null) || return 1
+    else
+        json_output=$($cli pr list --author @me --draft --json number,title,headRefName,body 2>/dev/null) || return 1
+    fi
+
+    local count
+    count=$(echo "$json_output" | jq 'length' 2>/dev/null) || return 1
+    [[ "$count" == "0" || -z "$count" ]] && return 1
+
+    if [[ "$cli" == "glab" ]]; then
+        DRAFT_MR_IID=$(echo "$json_output" | jq -r '.[0].iid')
+        DRAFT_MR_TITLE=$(echo "$json_output" | jq -r '.[0].title')
+        DRAFT_MR_BRANCH=$(echo "$json_output" | jq -r '.[0].source_branch')
+        DRAFT_MR_DESC=$(echo "$json_output" | jq -r '.[0].description // ""')
+    else
+        DRAFT_MR_IID=$(echo "$json_output" | jq -r '.[0].number')
+        DRAFT_MR_TITLE=$(echo "$json_output" | jq -r '.[0].title')
+        DRAFT_MR_BRANCH=$(echo "$json_output" | jq -r '.[0].headRefName')
+        DRAFT_MR_DESC=$(echo "$json_output" | jq -r '.[0].body // ""')
+    fi
+    return 0
+}
+
+# Find issues assigned to the current user that don't already have MRs/PRs
+# Sets ELIGIBLE_ISSUES global (JSON array) on success, returns 1 if none found
+discover_eligible_issues() {
+    local cli="$1"
+    local json_output
+
+    if [[ "$cli" == "glab" ]]; then
+        json_output=$($cli issue list --assignee @me --output json 2>/dev/null) || return 1
+    else
+        json_output=$($cli issue list --assignee @me --json number,title,body,labels 2>/dev/null) || return 1
+    fi
+
+    local count
+    count=$(echo "$json_output" | jq 'length' 2>/dev/null) || return 1
+    [[ "$count" == "0" || -z "$count" ]] && return 1
+
+    if [[ "$cli" == "glab" ]]; then
+        # glab provides merge_requests_count — filter to issues with no MR
+        ELIGIBLE_ISSUES=$(echo "$json_output" | jq '[.[] | select(.merge_requests_count == 0)]')
+    else
+        # gh: cross-reference with open PR branch names to filter
+        local pr_branches
+        pr_branches=$($cli pr list --json headRefName 2>/dev/null | jq -r '.[].headRefName' 2>/dev/null) || pr_branches=""
+
+        if [[ -n "$pr_branches" ]]; then
+            # Extract issue numbers from branch names (pattern: <number>-rest-of-name)
+            local nums=()
+            while IFS= read -r branch; do
+                local num="${branch%%-*}"
+                [[ "$num" =~ ^[0-9]+$ ]] && nums+=("$num")
+            done <<< "$pr_branches"
+
+            if [[ ${#nums[@]} -gt 0 ]]; then
+                local nums_csv
+                nums_csv=$(IFS=,; echo "${nums[*]}")
+                ELIGIBLE_ISSUES=$(echo "$json_output" | jq --argjson exclude "[$nums_csv]" \
+                    '[.[] | select((.number | tostring) as $n | $exclude | map(tostring) | index($n) | not)]')
+            else
+                ELIGIBLE_ISSUES="$json_output"
+            fi
+        else
+            ELIGIBLE_ISSUES="$json_output"
+        fi
+    fi
+
+    local eligible_count
+    eligible_count=$(echo "$ELIGIBLE_ISSUES" | jq 'length' 2>/dev/null) || eligible_count=0
+    [[ "$eligible_count" == "0" ]] && return 1
+    return 0
+}
+
+# Orchestrate task discovery: check draft MRs first, then eligible issues
+# Sets ISSUES_HAS_WORK=true if work found
+discover_issues_work() {
+    local cli="$1"
+    ISSUES_HAS_WORK=false
+    DRAFT_MR_IID=""
+    DRAFT_MR_TITLE=""
+    DRAFT_MR_BRANCH=""
+    DRAFT_MR_DESC=""
+    ELIGIBLE_ISSUES=""
+
+    echo "  Discovering work via $cli..."
+
+    # Step 1: Check for in-progress draft MRs (resume work)
+    if discover_draft_mr "$cli"; then
+        ISSUES_HAS_WORK=true
+        echo "  Found draft MR !$DRAFT_MR_IID: $DRAFT_MR_TITLE (branch: $DRAFT_MR_BRANCH)"
+        return
+    fi
+
+    # Step 2: Check for eligible issues (new work)
+    if discover_eligible_issues "$cli"; then
+        ISSUES_HAS_WORK=true
+        local count
+        count=$(echo "$ELIGIBLE_ISSUES" | jq 'length')
+        echo "  Found $count eligible issue(s)"
+        return
+    fi
+
+    echo "  No work found"
 }
 
 # Core instructions for plan file mode
@@ -439,28 +564,77 @@ build_prompt() {
         prompt+="Output: \`<promise>COMPLETE</promise>\`${nl}${nl}"
     elif [[ "$MODE" == "issues" ]]; then
         local cli="$ISSUES_CLI"
-        prompt+="You are working on ONE issue.${nl}${nl}"
-        prompt+="## Pick ONE Task${nl}${nl}"
-        prompt+="1. Check for assigned issues: \`$cli issue list --assignee=@me --output json\`${nl}"
-        prompt+="2. If there is an assigned issue, continue it${nl}"
-        prompt+="3. If no issues are assigned, find one: \`$cli issue list --output json\`${nl}"
-        prompt+="4. If no issues are open, skip to Completion section below${nl}"
-        prompt+="5. Use the \`iid\` field (NOT \`id\`) from the JSON as the issue number${nl}"
-        prompt+="6. Assign yourself: \`$cli issue update <iid> --assignee @me\`${nl}"
-        prompt+="7. Use \`$cli issue view <iid>\` to read full issue context${nl}${nl}"
-        prompt+="## Complete the Task${nl}${nl}"
-        prompt+="Do the work for this ONE issue only.${nl}${nl}"
-        prompt+="**Tip**: If a \`$cli\` command fails or you are unsure of the syntax, run \`$cli issue --help\` or \`$cli --help\` to discover available commands and flags.${nl}${nl}"
-        prompt+="## MANDATORY: Before Closing${nl}${nl}"
-        prompt+="You MUST do these steps IN ORDER before closing the issue:${nl}${nl}"
-        prompt+="1. **Commit your work**: \`git add <files> && git commit -m \"... Closes #<iid>\"\`${nl}"
-        prompt+="   - The commit message MUST include \`Closes #<iid>\` to auto-close the issue${nl}"
-        prompt+="2. **Push your work**: \`git push\`${nl}${nl}"
-        prompt+="## STOP - Do Not Continue${nl}${nl}"
-        prompt+="Do NOT look for or start another issue. You are FINISHED. Exit.${nl}${nl}"
-        prompt+="## Completion${nl}${nl}"
-        prompt+="Only if there are NO issues to work on (\`$cli issue list --output json\` returns an empty array):${nl}${nl}"
-        prompt+="Output: \`<promise>COMPLETE</promise>\`${nl}${nl}"
+
+        # Build prompt from deterministic discovery results
+        if [[ -n "$DRAFT_MR_IID" ]]; then
+            # Resume in-progress draft MR
+            local mr_view mr_ready
+            if [[ "$cli" == "glab" ]]; then
+                mr_view="glab mr view"
+                mr_ready="glab mr update $DRAFT_MR_IID --ready"
+            else
+                mr_view="gh pr view"
+                mr_ready="gh pr ready $DRAFT_MR_IID"
+            fi
+
+            prompt+="You have in-progress work on merge request !${DRAFT_MR_IID}: **${DRAFT_MR_TITLE}**${nl}"
+            prompt+="Branch: \`$DRAFT_MR_BRANCH\`${nl}${nl}"
+            [[ -n "$DRAFT_MR_DESC" && "$DRAFT_MR_DESC" != "null" ]] && prompt+="MR description:${nl}${DRAFT_MR_DESC}${nl}${nl}"
+
+            prompt+="## Implementation${nl}${nl}"
+            prompt+="1. Ensure you are on the correct branch: \`git checkout $DRAFT_MR_BRANCH\`${nl}"
+            prompt+="2. Read the MR for full context: \`$mr_view $DRAFT_MR_IID --comments\`${nl}"
+            prompt+="3. Implement your solution. Make atomic commits.${nl}${nl}"
+
+            prompt+="## Close-out${nl}${nl}"
+            prompt+="1. Ensure all checks and tests pass${nl}"
+            prompt+="2. Push your work: \`git push\`${nl}"
+            prompt+="3. If the work is complete, mark the MR as ready: \`$mr_ready\`${nl}"
+            prompt+="4. Switch back to main: \`git switch main && git pull\`${nl}${nl}"
+
+            prompt+="Do NOT start any other tasks. You are FINISHED after this.${nl}${nl}"
+
+        elif [[ -n "$ELIGIBLE_ISSUES" ]]; then
+            # Work on one of the discovered issues
+            local issue_view mr_create_hint
+            if [[ "$cli" == "glab" ]]; then
+                issue_view="glab issue view"
+                mr_create_hint="glab mr create --related-issue <iid> --copy-issue-labels --create-source-branch --draft --no-editor --remove-source-branch --squash-before-merge"
+            else
+                issue_view="gh issue view"
+                mr_create_hint="Create a branch (git checkout -b feature/<iid>-<short-description>), then after committing: gh pr create --draft --title \"<title>\" --body \"Closes #<iid>\""
+            fi
+
+            prompt+="The following issues are assigned to you:${nl}${nl}"
+            local i=0
+            local count
+            count=$(echo "$ELIGIBLE_ISSUES" | jq 'length')
+            while [[ $i -lt $count ]]; do
+                local iid title
+                if [[ "$cli" == "glab" ]]; then
+                    iid=$(echo "$ELIGIBLE_ISSUES" | jq -r ".[$i].iid")
+                    title=$(echo "$ELIGIBLE_ISSUES" | jq -r ".[$i].title")
+                else
+                    iid=$(echo "$ELIGIBLE_ISSUES" | jq -r ".[$i].number")
+                    title=$(echo "$ELIGIBLE_ISSUES" | jq -r ".[$i].title")
+                fi
+                prompt+="- #$iid: $title${nl}"
+                i=$((i + 1))
+            done
+
+            prompt+="${nl}## Implementation${nl}${nl}"
+            prompt+="1. Pick the most suitable issue from the list above${nl}"
+            prompt+="2. Read full context: \`$issue_view <iid> --comments\`${nl}"
+            prompt+="3. Create a draft MR: \`$mr_create_hint\`${nl}"
+            prompt+="4. Implement your solution. Make atomic commits.${nl}${nl}"
+
+            prompt+="## Close-out${nl}${nl}"
+            prompt+="1. Ensure all checks and tests pass${nl}"
+            prompt+="2. Push your work: \`git push -u origin HEAD\`${nl}"
+            prompt+="3. Switch back to main: \`git switch main && git pull\`${nl}${nl}"
+
+            prompt+="Do NOT start any other tasks. You are FINISHED after this.${nl}${nl}"
+        fi
     elif [[ "$MODE" == "prd" ]]; then
         local prd_instructions="${RALPH_PRD_INSTRUCTIONS//PRD_FILE_PATH/$PRD_FILE}"
         prompt+="$prd_instructions"
@@ -515,6 +689,27 @@ while [[ $iteration -lt $MAX_ITERATIONS ]]; do
     echo "═══════════════════════════════════════════════════════"
     echo "  Iteration $iteration of $MAX_ITERATIONS"
     echo "═══════════════════════════════════════════════════════"
+
+    # Deterministic discovery for issues mode (before invoking Claude)
+    if [[ "$MODE" == "issues" ]]; then
+        discover_issues_work "$ISSUES_CLI"
+        if [[ "$ISSUES_HAS_WORK" == false ]]; then
+            echo ""
+            echo "═══════════════════════════════════════════════════════"
+            echo "  No work discovered via $ISSUES_CLI - all done!"
+            echo "  Finished after $iteration iteration(s)"
+            echo "═══════════════════════════════════════════════════════"
+            exit 0
+        fi
+
+        # For draft MRs, ensure we're on the right branch
+        if [[ -n "$DRAFT_MR_BRANCH" ]]; then
+            echo "  Switching to branch: $DRAFT_MR_BRANCH"
+            git fetch --prune 2>/dev/null || true
+            git checkout "$DRAFT_MR_BRANCH" 2>/dev/null || \
+                git checkout -b "$DRAFT_MR_BRANCH" "origin/$DRAFT_MR_BRANCH" 2>/dev/null || true
+        fi
+    fi
 
     # Log iteration start (non-beads mode only)
     if [[ -n "$PROGRESS_FILE" ]]; then
