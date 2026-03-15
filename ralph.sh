@@ -11,6 +11,7 @@
 #   -w, --worktree NAME         Git worktree to run in (.worktree/<name>)
 #   -s, --settings FILE         Path to Claude settings JSON file
 #   --glab                      Use GitLab issues via glab CLI
+#   --milestone NAME            Filter issues by milestone (glab/gh)
 #   --gh                        Use GitHub issues via gh CLI
 #   -d, --debug                 Show Claude output in real-time
 #   -h, --help                  Show this help message
@@ -41,6 +42,7 @@ PRD_FILE=""
 RALPH_INSTRUCTIONS_FILE=""
 BEADS_ISSUE=""
 ISSUES_CLI=""
+MILESTONE=""
 SETTINGS_FILE=".claude/settings.local.json"
 COMPLETION_SIGNAL="<promise>COMPLETE</promise>"
 DEBUG=false
@@ -176,17 +178,21 @@ discover_eligible_issues() {
     local json_output
 
     if [[ "$cli" == "glab" ]]; then
+        local milestone_args=()
+        [[ -n "$MILESTONE" ]] && milestone_args=(--milestone "$MILESTONE")
         if [[ "$mode" == "me" ]]; then
-            json_output=$($cli issue list --assignee @me --output json 2>/dev/null) || return 1
+            json_output=$($cli issue list --assignee @me "${milestone_args[@]}" --output json 2>/dev/null) || return 1
         else
             # glab has no "unassigned" filter; fetch all and filter client-side
-            json_output=$($cli issue list --output json 2>/dev/null) || return 1
+            json_output=$($cli issue list "${milestone_args[@]}" --output json 2>/dev/null) || return 1
         fi
     else
+        local gh_milestone_args=()
+        [[ -n "$MILESTONE" ]] && gh_milestone_args=(--milestone "$MILESTONE")
         if [[ "$mode" == "me" ]]; then
-            json_output=$($cli issue list --assignee @me --json number,title,body,labels 2>/dev/null) || return 1
+            json_output=$($cli issue list --assignee @me "${gh_milestone_args[@]}" --json number,title,body,labels 2>/dev/null) || return 1
         else
-            json_output=$($cli issue list --search "no:assignee" --json number,title,body,labels 2>/dev/null) || return 1
+            json_output=$($cli issue list --search "no:assignee" "${gh_milestone_args[@]}" --json number,title,body,labels 2>/dev/null) || return 1
         fi
     fi
 
@@ -376,6 +382,10 @@ while [[ $# -gt 0 ]]; do
         --glab)
             [[ -z "$ISSUES_CLI" ]] && ISSUES_CLI=glab
             shift
+            ;;
+        --milestone)
+            MILESTONE="$2"
+            shift 2
             ;;
         --gh)
             [[ -z "$ISSUES_CLI" ]] && ISSUES_CLI=gh

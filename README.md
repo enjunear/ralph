@@ -71,6 +71,7 @@ Options:
   --prd FILE                  PRD JSON file with requirements
   --glab                      Use GitLab issues via glab CLI
   --gh                        Use GitHub issues via gh CLI
+  --milestone NAME            Filter issues by milestone (glab/gh)
   -r, --ralph-instructions    Custom instructions file (overwrites defaults)
   -i, --max-iterations N      Maximum iterations (default: 10)
   -w, --worktree NAME         Git worktree to run in (.worktree/<name>)
